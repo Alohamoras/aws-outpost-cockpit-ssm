@@ -243,42 +243,104 @@ echo "$(date): Instance ready for SSM automation" >> /var/log/ssm-bootstrap.log
     echo "Instance ID: $INSTANCE_ID" > .last-instance-id
 }
 
-# Wait for instance to be running and SSM ready
+# Wait for instance to be fully ready with progressive status updates
 wait_for_ssm_ready() {
-    log "Waiting for instance to be running and SSM ready..."
+    log "Waiting for Outpost instance to be fully ready (this may take 15-20 minutes)..."
     
-    # Wait for instance to be running
+    # Phase 1: Wait for instance to be running (usually 1-2 minutes)
+    log "Phase 1/4: Waiting for instance state 'running'..."
     aws ec2 wait instance-running \
         --region "$REGION" \
         --instance-ids "$INSTANCE_ID"
+    success "✅ Phase 1 complete: Instance is now running"
     
-    success "Instance is now running"
-    
-    # Wait for SSM agent to be ready
-    log "Waiting for SSM agent to be ready..."
-    local ssm_ready=false
+    # Phase 2: Wait for system status checks to pass (usually 5-15 minutes on Outpost)
+    log "Phase 2/4: Waiting for system status checks (this takes longer on Outpost instances)..."
+    local system_ready=false
     local attempts=0
-    local max_attempts=20
+    local max_system_attempts=30  # 15 minutes at 30-second intervals
     
-    while [[ $ssm_ready == false ]] && [[ $attempts -lt $max_attempts ]]; do
+    while [[ $system_ready == false ]] && [[ $attempts -lt $max_system_attempts ]]; do
+        local system_status=$(aws ec2 describe-instance-status \
+            --region "$REGION" \
+            --instance-ids "$INSTANCE_ID" \
+            --query 'InstanceStatuses[0].SystemStatus.Status' \
+            --output text 2>/dev/null || echo "not-ready")
+        
+        local instance_status=$(aws ec2 describe-instance-status \
+            --region "$REGION" \
+            --instance-ids "$INSTANCE_ID" \
+            --query 'InstanceStatuses[0].InstanceStatus.Status' \
+            --output text 2>/dev/null || echo "not-ready")
+        
+        if [[ "$system_status" == "ok" && "$instance_status" == "ok" ]]; then
+            system_ready=true
+            success "✅ Phase 2 complete: System status checks passed"
+        else
+            ((attempts++))
+            log "System status: $system_status, Instance status: $instance_status (attempt $attempts/$max_system_attempts)"
+            sleep 30
+        fi
+    done
+    
+    if [[ $system_ready == false ]]; then
+        warning "System status checks did not complete, but continuing with SSH connectivity test"
+    fi
+    
+    # Phase 3: Wait for SSH connectivity (indicates instance is truly ready)
+    log "Phase 3/4: Waiting for SSH connectivity..."
+    local ssh_ready=false
+    local ssh_attempts=0
+    local max_ssh_attempts=20  # 10 minutes at 30-second intervals
+    
+    while [[ $ssh_ready == false ]] && [[ $ssh_attempts -lt $max_ssh_attempts ]]; do
+        if ssh -i ryanfill.pem -o ConnectTimeout=5 -o StrictHostKeyChecking=no rocky@"$PUBLIC_IP" "echo 'SSH ready'" >/dev/null 2>&1; then
+            ssh_ready=true
+            success "✅ Phase 3 complete: SSH connectivity established"
+        else
+            ((ssh_attempts++))
+            log "SSH connectivity check $ssh_attempts/$max_ssh_attempts, retrying in 30 seconds..."
+            sleep 30
+        fi
+    done
+    
+    if [[ $ssh_ready == false ]]; then
+        warning "SSH connectivity not established, but continuing with SSM agent check"
+    fi
+    
+    # Phase 4: Wait for SSM agent to be ready
+    log "Phase 4/4: Waiting for SSM agent registration..."
+    local ssm_ready=false
+    local ssm_attempts=0
+    local max_ssm_attempts=20  # 10 minutes at 30-second intervals
+    
+    while [[ $ssm_ready == false ]] && [[ $ssm_attempts -lt $max_ssm_attempts ]]; do
         if aws ssm describe-instance-information \
             --region "$REGION" \
-            --filters "Name=InstanceIds,Values=$INSTANCE_ID" \
+            --filters "Key=InstanceIds,Values=$INSTANCE_ID" \
             --query 'InstanceInformationList[0].PingStatus' \
             --output text 2>/dev/null | grep -q "Online"; then
             ssm_ready=true
-            success "SSM agent is now online"
+            success "✅ Phase 4 complete: SSM agent is online and ready"
         else
-            ((attempts++))
-            log "SSM readiness check $attempts/$max_attempts, retrying in 15 seconds..."
-            sleep 15
+            ((ssm_attempts++))
+            log "SSM agent registration check $ssm_attempts/$max_ssm_attempts, retrying in 30 seconds..."
+            sleep 30
         fi
     done
     
     if [[ $ssm_ready == false ]]; then
-        error "SSM agent never came online after $max_attempts attempts"
+        error "SSM agent never came online after extended wait period"
+        error "This may indicate network issues or Outpost connectivity problems"
+        echo ""
+        echo "Manual troubleshooting steps:"
+        echo "1. Check SSH access: ssh -i ryanfill.pem rocky@$PUBLIC_IP"
+        echo "2. Check SSM agent: sudo systemctl status amazon-ssm-agent"
+        echo "3. Check bootstrap logs: sudo tail -f /var/log/user-data-bootstrap.log"
         exit 1
     fi
+    
+    success "🎉 All phases complete! Instance is fully ready for SSM automation"
 }
 
 # Get instance public IP and assign if needed
@@ -558,11 +620,16 @@ main() {
     echo ""
     echo "📧 You will receive email notifications for:"
     echo "   • Installation start"
-    echo "   • Component progress"
+    echo "   • Component progress" 
     echo "   • Installation completion"
     echo "   • Any errors or failures"
     echo ""
-    echo "🔄 Starting SSM automation..."
+    echo "⏳ IMPORTANT: Outpost instances take longer to initialize"
+    echo "   • Instance startup: ~15-20 minutes total"
+    echo "   • Network connectivity establishment takes time"
+    echo "   • This is normal behavior for Outpost infrastructure"
+    echo ""
+    echo "🔄 Starting SSM readiness check (with progress updates)..."
     echo "═══════════════════════════════════════════════════"
     
     # Execute SSM automation
