@@ -90,9 +90,11 @@ mainSteps:
     isCritical: false
     
   - name: "SystemPreparation"
-    action: "aws:runDocument"
+    action: "aws:runCommand"
     inputs:
       DocumentName: "cockpit-system-prep"
+      InstanceIds:
+        - "{{ InstanceId }}"
       Parameters:
         InstanceId: "{{ InstanceId }}"
         NotificationTopic: "{{ NotificationTopic }}"
@@ -127,9 +129,11 @@ mainSteps:
     isEnd: true
     
   - name: "CoreCockpitInstall"
-    action: "aws:runDocument"
+    action: "aws:runCommand"
     inputs:
       DocumentName: "cockpit-core-install"
+      InstanceIds:
+        - "{{ InstanceId }}"
       Parameters:
         InstanceId: "{{ InstanceId }}"
         NotificationTopic: "{{ NotificationTopic }}"
@@ -164,9 +168,11 @@ mainSteps:
     isEnd: true
     
   - name: "ExtendedServicesSetup"
-    action: "aws:runDocument"
+    action: "aws:runCommand"
     inputs:
       DocumentName: "cockpit-services-setup"
+      InstanceIds:
+        - "{{ InstanceId }}"
       Parameters:
         InstanceId: "{{ InstanceId }}"
         NotificationTopic: "{{ NotificationTopic }}"
@@ -207,9 +213,11 @@ mainSteps:
     isEnd: true
     
   - name: "ThirdPartyExtensions"
-    action: "aws:runDocument"
+    action: "aws:runCommand"
     inputs:
       DocumentName: "cockpit-extensions"
+      InstanceIds:
+        - "{{ InstanceId }}"
       Parameters:
         InstanceId: "{{ InstanceId }}"
         NotificationTopic: "{{ NotificationTopic }}"
@@ -250,9 +258,11 @@ mainSteps:
     isEnd: true
     
   - name: "UserConfiguration"
-    action: "aws:runDocument"
+    action: "aws:runCommand"
     inputs:
       DocumentName: "cockpit-user-config"
+      InstanceIds:
+        - "{{ InstanceId }}"
       Parameters:
         InstanceId: "{{ InstanceId }}"
         NotificationTopic: "{{ NotificationTopic }}"
@@ -293,9 +303,11 @@ mainSteps:
     isEnd: true
     
   - name: "FinalConfiguration"
-    action: "aws:runDocument"
+    action: "aws:runCommand"
     inputs:
       DocumentName: "cockpit-finalize"
+      InstanceIds:
+        - "{{ InstanceId }}"
       Parameters:
         InstanceId: "{{ InstanceId }}"
         NotificationTopic: "{{ NotificationTopic }}"

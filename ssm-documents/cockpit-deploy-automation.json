@@ -1,0 +1,321 @@
+{
+  "schemaVersion": "0.3",
+  "description": "Main Cockpit Deployment Automation - Orchestrates all components",
+  "assumeRole": "{{ AutomationAssumeRole }}",
+  "parameters": {
+    "InstanceId": {
+      "type": "String",
+      "description": "The instance ID to configure with Cockpit"
+    },
+    "NotificationTopic": {
+      "type": "String",
+      "description": "SNS topic ARN for notifications",
+      "default": ""
+    },
+    "AutomationAssumeRole": {
+      "type": "String",
+      "description": "The IAM role ARN for automation execution",
+      "default": ""
+    },
+    "ContinueOnError": {
+      "type": "Boolean",
+      "description": "Continue deployment even if non-critical steps fail",
+      "default": true
+    }
+  },
+  "mainSteps": [
+    {
+      "name": "ValidateInstance",
+      "action": "aws:executeAwsApi",
+      "inputs": {
+        "Service": "ec2",
+        "Api": "DescribeInstances",
+        "InstanceIds": [
+          "{{ InstanceId }}"
+        ]
+      },
+      "outputs": [
+        {
+          "Name": "InstanceState",
+          "Selector": "$.Reservations[0].Instances[0].State.Name",
+          "Type": "String"
+        },
+        {
+          "Name": "InstanceType",
+          "Selector": "$.Reservations[0].Instances[0].InstanceType",
+          "Type": "String"
+        },
+        {
+          "Name": "PublicIpAddress",
+          "Selector": "$.Reservations[0].Instances[0].PublicIpAddress",
+          "Type": "String"
+        }
+      ],
+      "isEnd": false
+    },
+    {
+      "name": "CheckInstanceRunning",
+      "action": "aws:branch",
+      "inputs": {
+        "Choices": [
+          {
+            "NextStep": "NotifyStart",
+            "Variable": "{{ ValidateInstance.InstanceState }}",
+            "StringEquals": "running"
+          }
+        ],
+        "Default": "InstanceNotRunning"
+      },
+      "isEnd": false
+    },
+    {
+      "name": "InstanceNotRunning",
+      "action": "aws:executeAwsApi",
+      "inputs": {
+        "Service": "sns",
+        "Api": "Publish",
+        "TopicArn": "{{ NotificationTopic }}",
+        "Subject": "Cockpit Deployment FAILED - Instance Not Running",
+        "Message": "Cockpit deployment cannot proceed. Instance {{ InstanceId }} is not in running state.\nCurrent state: {{ ValidateInstance.InstanceState }}\n\nPlease ensure the instance is running before retrying deployment.\n"
+      },
+      "isEnd": true
+    },
+    {
+      "name": "NotifyStart",
+      "action": "aws:executeAwsApi",
+      "inputs": {
+        "Service": "sns",
+        "Api": "Publish",
+        "TopicArn": "{{ NotificationTopic }}",
+        "Subject": "Cockpit Deployment STARTED - {{ InstanceId }}",
+        "Message": "\ud83d\ude80 COCKPIT DEPLOYMENT STARTED\n\nInstance Details:\n- Instance ID: {{ InstanceId }}\n- Instance Type: {{ ValidateInstance.InstanceType }}\n- Public IP: {{ ValidateInstance.PublicIpAddress }}\n- Start Time: {{ global:DATE_TIME }}\n\nDeployment will proceed through the following components:\n1. System Preparation\n2. Core Cockpit Installation\n3. Extended Services Setup  \n4. Third-party Extensions\n5. User Configuration\n6. Final Configuration\n\nYou will receive notifications for each component completion.\n"
+      },
+      "isEnd": false,
+      "isCritical": false
+    },
+    {
+      "name": "SystemPreparation",
+      "action": "aws:runCommand",
+      "inputs": {
+        "DocumentName": "cockpit-system-prep",
+        "InstanceIds": [
+          "{{ InstanceId }}"
+        ],
+        "Parameters": {
+          "InstanceId": "{{ InstanceId }}",
+          "NotificationTopic": "{{ NotificationTopic }}"
+        }
+      },
+      "isEnd": false,
+      "isCritical": true,
+      "onFailure": "step:HandleSystemPrepFailure",
+      "nextStep": "CoreCockpitInstall"
+    },
+    {
+      "name": "HandleSystemPrepFailure",
+      "action": "aws:executeAwsApi",
+      "inputs": {
+        "Service": "sns",
+        "Api": "Publish",
+        "TopicArn": "{{ NotificationTopic }}",
+        "Subject": "Cockpit Deployment FAILED - System Preparation",
+        "Message": "\u274c COCKPIT DEPLOYMENT FAILED\n\nSystem preparation failed on instance {{ InstanceId }}.\nThis is a critical failure and deployment cannot continue.\n\nPlease check the SSM execution logs and instance system logs:\n- SSM Execution: {{ automation:EXECUTION_ID }}\n- Instance Logs: /var/log/cockpit-system-prep.log\n\nCommon causes:\n- Network connectivity issues\n- Repository access problems  \n- Insufficient instance resources\n\nRetry deployment after resolving the issue.\n"
+      },
+      "isEnd": true
+    },
+    {
+      "name": "CoreCockpitInstall",
+      "action": "aws:runCommand",
+      "inputs": {
+        "DocumentName": "cockpit-core-install",
+        "InstanceIds": [
+          "{{ InstanceId }}"
+        ],
+        "Parameters": {
+          "InstanceId": "{{ InstanceId }}",
+          "NotificationTopic": "{{ NotificationTopic }}"
+        }
+      },
+      "isEnd": false,
+      "isCritical": true,
+      "onFailure": "step:HandleCoreInstallFailure",
+      "nextStep": "ExtendedServicesSetup"
+    },
+    {
+      "name": "HandleCoreInstallFailure",
+      "action": "aws:executeAwsApi",
+      "inputs": {
+        "Service": "sns",
+        "Api": "Publish",
+        "TopicArn": "{{ NotificationTopic }}",
+        "Subject": "Cockpit Deployment FAILED - Core Installation",
+        "Message": "\u274c COCKPIT DEPLOYMENT FAILED\n\nCore Cockpit installation failed on instance {{ InstanceId }}.\nThis is a critical failure and deployment cannot continue.\n\nPlease check the SSM execution logs and instance system logs:\n- SSM Execution: {{ automation:EXECUTION_ID }}\n- Instance Logs: /var/log/cockpit-core-install.log\n\nThe system preparation completed successfully, so the issue is likely:\n- Cockpit package availability\n- Package dependency conflicts\n- Service startup issues\n\nYou can retry just the core installation component.\n"
+      },
+      "isEnd": true
+    },
+    {
+      "name": "ExtendedServicesSetup",
+      "action": "aws:runCommand",
+      "inputs": {
+        "DocumentName": "cockpit-services-setup",
+        "InstanceIds": [
+          "{{ InstanceId }}"
+        ],
+        "Parameters": {
+          "InstanceId": "{{ InstanceId }}",
+          "NotificationTopic": "{{ NotificationTopic }}"
+        }
+      },
+      "isEnd": false,
+      "isCritical": false,
+      "onFailure": "step:HandleServicesFailure",
+      "nextStep": "ThirdPartyExtensions"
+    },
+    {
+      "name": "HandleServicesFailure",
+      "action": "aws:branch",
+      "inputs": {
+        "Choices": [
+          {
+            "NextStep": "ThirdPartyExtensions",
+            "Variable": "{{ ContinueOnError }}",
+            "BooleanEquals": true
+          }
+        ],
+        "Default": "ServicesFailureStop"
+      },
+      "isEnd": false
+    },
+    {
+      "name": "ServicesFailureStop",
+      "action": "aws:executeAwsApi",
+      "inputs": {
+        "Service": "sns",
+        "Api": "Publish",
+        "TopicArn": "{{ NotificationTopic }}",
+        "Subject": "Cockpit Deployment FAILED - Extended Services",
+        "Message": "\u274c COCKPIT DEPLOYMENT FAILED\n\nExtended services setup failed on instance {{ InstanceId }}.\nContinueOnError is disabled, so deployment is stopping.\n\nCore Cockpit is installed and should be functional, but additional services\n(virtualization, containers, monitoring) may not be available.\n\nCheck logs: /var/log/cockpit-services-setup.log\n\nYou can retry individual components or enable ContinueOnError.\n"
+      },
+      "isEnd": true
+    },
+    {
+      "name": "ThirdPartyExtensions",
+      "action": "aws:runCommand",
+      "inputs": {
+        "DocumentName": "cockpit-extensions",
+        "InstanceIds": [
+          "{{ InstanceId }}"
+        ],
+        "Parameters": {
+          "InstanceId": "{{ InstanceId }}",
+          "NotificationTopic": "{{ NotificationTopic }}"
+        }
+      },
+      "isEnd": false,
+      "isCritical": false,
+      "onFailure": "step:HandleExtensionsFailure",
+      "nextStep": "UserConfiguration"
+    },
+    {
+      "name": "HandleExtensionsFailure",
+      "action": "aws:branch",
+      "inputs": {
+        "Choices": [
+          {
+            "NextStep": "UserConfiguration",
+            "Variable": "{{ ContinueOnError }}",
+            "BooleanEquals": true
+          }
+        ],
+        "Default": "ExtensionsFailureStop"
+      },
+      "isEnd": false
+    },
+    {
+      "name": "ExtensionsFailureStop",
+      "action": "aws:executeAwsApi",
+      "inputs": {
+        "Service": "sns",
+        "Api": "Publish",
+        "TopicArn": "{{ NotificationTopic }}",
+        "Subject": "Cockpit Deployment FAILED - Extensions",
+        "Message": "\u274c COCKPIT DEPLOYMENT FAILED\n\nThird-party extensions installation failed on instance {{ InstanceId }}.\nContinueOnError is disabled, so deployment is stopping.\n\nCore Cockpit and extended services should be functional, but additional\nmodules (file manager, sensors) may not be available.\n\nCheck logs: /var/log/cockpit-extensions.log\n\nYou can retry individual components or enable ContinueOnError.\n"
+      },
+      "isEnd": true
+    },
+    {
+      "name": "UserConfiguration",
+      "action": "aws:runCommand",
+      "inputs": {
+        "DocumentName": "cockpit-user-config",
+        "InstanceIds": [
+          "{{ InstanceId }}"
+        ],
+        "Parameters": {
+          "InstanceId": "{{ InstanceId }}",
+          "NotificationTopic": "{{ NotificationTopic }}"
+        }
+      },
+      "isEnd": false,
+      "isCritical": false,
+      "onFailure": "step:HandleUserConfigFailure",
+      "nextStep": "FinalConfiguration"
+    },
+    {
+      "name": "HandleUserConfigFailure",
+      "action": "aws:branch",
+      "inputs": {
+        "Choices": [
+          {
+            "NextStep": "FinalConfiguration",
+            "Variable": "{{ ContinueOnError }}",
+            "BooleanEquals": true
+          }
+        ],
+        "Default": "UserConfigFailureStop"
+      },
+      "isEnd": false
+    },
+    {
+      "name": "UserConfigFailureStop",
+      "action": "aws:executeAwsApi",
+      "inputs": {
+        "Service": "sns",
+        "Api": "Publish",
+        "TopicArn": "{{ NotificationTopic }}",
+        "Subject": "Cockpit Deployment FAILED - User Configuration",
+        "Message": "\u274c COCKPIT DEPLOYMENT FAILED\n\nUser configuration failed on instance {{ InstanceId }}.\nContinueOnError is disabled, so deployment is stopping.\n\nCockpit is installed but user access may not be properly configured.\nYou may need to manually create users or set passwords.\n\nCheck logs: /var/log/cockpit-user-config.log\n\nYou can retry individual components or enable ContinueOnError.\n"
+      },
+      "isEnd": true
+    },
+    {
+      "name": "FinalConfiguration",
+      "action": "aws:runCommand",
+      "inputs": {
+        "DocumentName": "cockpit-finalize",
+        "InstanceIds": [
+          "{{ InstanceId }}"
+        ],
+        "Parameters": {
+          "InstanceId": "{{ InstanceId }}",
+          "NotificationTopic": "{{ NotificationTopic }}"
+        }
+      },
+      "isEnd": true,
+      "isCritical": false,
+      "onFailure": "step:HandleFinalFailure"
+    },
+    {
+      "name": "HandleFinalFailure",
+      "action": "aws:executeAwsApi",
+      "inputs": {
+        "Service": "sns",
+        "Api": "Publish",
+        "TopicArn": "{{ NotificationTopic }}",
+        "Subject": "Cockpit Deployment COMPLETED with Warnings",
+        "Message": "\u26a0\ufe0f COCKPIT DEPLOYMENT COMPLETED WITH WARNINGS\n\nFinal configuration had issues on instance {{ InstanceId }}, but deployment completed.\n\nCockpit should be functional at: https://{{ ValidateInstance.PublicIpAddress }}:9090\n\nCheck logs: /var/log/cockpit-finalize.log\n\nManual verification recommended:\n- Test Cockpit web interface access\n- Verify user login functionality\n- Check service status\n"
+      },
+      "isEnd": true
+    }
+  ]
+}

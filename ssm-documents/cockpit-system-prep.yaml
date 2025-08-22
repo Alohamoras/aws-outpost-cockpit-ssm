@@ -26,7 +26,9 @@ mainSteps:
           # Get instance metadata for notifications
           INSTANCE_ID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
           REGION=$(curl -s http://169.254.169.254/latest/meta-data/placement/region)
-          SNS_TOPIC_ARN="{{NotificationTopic}}"
+          
+          # Get SNS topic from SSM Parameter Store
+          SNS_TOPIC_ARN=$(aws ssm get-parameter --name "/cockpit-deployment/sns-topic-arn" --region "$REGION" --query 'Parameter.Value' --output text 2>/dev/null || echo "")
           
           # Notification function
           send_notification() {
@@ -133,11 +135,11 @@ mainSteps:
             exit 1
           fi
           
-          # Install AWS CLI
+          # Install AWS CLI (force overwrite if exists)
           echo "Installing AWS CLI..."
           curl -s "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
-          unzip -q awscliv2.zip
-          ./aws/install
+          unzip -o -q awscliv2.zip
+          ./aws/install --update
           rm -rf awscliv2.zip aws/
           
           # Verify AWS CLI installation

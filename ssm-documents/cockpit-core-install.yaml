@@ -26,7 +26,8 @@ mainSteps:
           # Get instance metadata for notifications
           INSTANCE_ID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
           REGION=$(curl -s http://169.254.169.254/latest/meta-data/placement/region)
-          SNS_TOPIC_ARN="{{NotificationTopic}}"
+          # Get SNS topic from SSM Parameter Store
+          SNS_TOPIC_ARN=$(aws ssm get-parameter --name "/cockpit-deployment/sns-topic-arn" --region "$REGION" --query 'Parameter.Value' --output text 2>/dev/null || echo "")
           
           # Notification function
           send_notification() {

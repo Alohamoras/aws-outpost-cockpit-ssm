@@ -30,7 +30,8 @@ mainSteps:
           PRIVATE_IP=$(curl -s http://169.254.169.254/latest/meta-data/local-ipv4 || echo "unknown")
           AZ=$(curl -s http://169.254.169.254/latest/meta-data/placement/availability-zone || echo "unknown")
           INSTANCE_TYPE=$(curl -s http://169.254.169.254/latest/meta-data/instance-type || echo "unknown")
-          SNS_TOPIC_ARN="{{NotificationTopic}}"
+          # Get SNS topic from SSM Parameter Store
+          SNS_TOPIC_ARN=$(aws ssm get-parameter --name "/cockpit-deployment/sns-topic-arn" --region "$REGION" --query 'Parameter.Value' --output text 2>/dev/null || echo "")
           
           # Notification function
           send_notification() {

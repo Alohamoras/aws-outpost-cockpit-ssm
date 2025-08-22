@@ -205,20 +205,12 @@ ensure_ssm_instance_profile() {
 launch_instance() {
     log "Launching EC2 instance..."
     
-    # Create minimal user-data for SSM bootstrap
-    local user_data='#!/bin/bash
-# Minimal bootstrap for SSM-based Cockpit installation
-dnf update -y
-dnf install -y https://s3.amazonaws.com/ec2-downloads-windows/SSMAgent/latest/linux_amd64/amazon-ssm-agent.rpm
-systemctl enable amazon-ssm-agent
-systemctl start amazon-ssm-agent
-
-# Wait for SSM agent to be ready
-sleep 30
-
-# Log readiness
-echo "$(date): Instance ready for SSM automation" >> /var/log/ssm-bootstrap.log
-'
+    # Load user-data from bootstrap script file
+    if [[ ! -f "user-data-bootstrap.sh" ]]; then
+        error "user-data-bootstrap.sh file not found"
+        exit 1
+    fi
+    local user_data="$(cat user-data-bootstrap.sh)"
     
     INSTANCE_ID=$(aws ec2 run-instances \
         --region "$REGION" \
