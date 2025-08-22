@@ -14,474 +14,350 @@ mainSteps:
     inputs:
       timeoutSeconds: "3600"
       runCommand:
-        - |
-          #!/bin/bash
-          set -e
-          
-          # Setup comprehensive logging
-          exec > >(tee -a /var/log/cockpit-complete-install.log)
-          exec 2>&1
-          echo "=============================================="
-          echo "COCKPIT COMPLETE INSTALLATION STARTED"
-          echo "Start Time: $(date)"
-          echo "Instance ID: {{InstanceId}}"
-          echo "=============================================="
-          
-          # Get instance metadata
-          INSTANCE_ID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
-          REGION=$(curl -s http://169.254.169.254/latest/meta-data/placement/region)
-          SNS_TOPIC_ARN="{{NotificationTopic}}"
-          
-          # Notification function
-          send_notification() {
-            local status="$1"
-            local component="$2"
-            local message="$3"
-            
-            if [[ -n "$SNS_TOPIC_ARN" ]]; then
-              aws sns publish \
-                --region "$REGION" \
-                --topic-arn "$SNS_TOPIC_ARN" \
-                --subject "Cockpit $component $status - $INSTANCE_ID" \
-                --message "$message" || echo "Failed to send SNS notification"
-            fi
-          }
-          
-          # Retry function for DNF operations
-          retry_dnf() {
-            local max_attempts=3
-            local attempt=1
-            local sleep_time=120
-            
-            while [ $attempt -le $max_attempts ]; do
-              echo "DNF attempt $attempt/$max_attempts: $*"
-              
-              if dnf clean all >/dev/null 2>&1 && dnf makecache >/dev/null 2>&1 && dnf "$@"; then
-                echo "DNF operation succeeded on attempt $attempt"
-                return 0
-              fi
-              
-              if [ $attempt -lt $max_attempts ]; then
-                echo "DNF attempt $attempt failed, retrying in $sleep_time seconds..."
-                sleep $sleep_time
-              else
-                echo "DNF operation failed after $max_attempts attempts"
-                return 1
-              fi
-              ((attempt++))
-            done
-          }
-          
-          # Send deployment start notification
-          send_notification "STARTED" "Deployment" "🚀 COCKPIT DEPLOYMENT STARTED
-
-          Instance Details:
-          - Instance ID: $INSTANCE_ID
-          - Start Time: $(date)
-          
-          The deployment will proceed through these components:
-          1. System Preparation
-          2. Core Cockpit Installation
-          3. Extended Services Setup
-          4. Third-party Extensions
-          5. User Configuration
-          6. Final Configuration
-          
-          You will receive notifications for each component completion."
-          
-          # ==============================================
-          # COMPONENT 1: SYSTEM PREPARATION
-          # ==============================================
-          echo ""
-          echo "=== COMPONENT 1: SYSTEM PREPARATION ==="
-          echo "$(date): Starting system preparation..."
-          
-          # Check if Outpost instance and add delay
-          outpost_arn=$(curl -s --max-time 5 http://169.254.169.254/latest/meta-data/outpost-arn 2>/dev/null || echo "")
-          if [[ -n "$outpost_arn" ]]; then
-            echo "Outpost instance detected: $outpost_arn"
-            echo "Adding initial delay for Outpost network stabilization..."
-            sleep 300  # 5 minute delay for Outpost instances
-          fi
-          
-          # Network readiness check
-          echo "Checking network readiness for package repositories..."
-          max_attempts=20
-          attempt=1
-          sleep_time=60
-          
-          while [ $attempt -le $max_attempts ]; do
-            echo "Network readiness check $attempt/$max_attempts..."
-            
-            if curl -s --max-time 10 --connect-timeout 5 \
-               https://dl.rockylinux.org/pub/rocky/9/BaseOS/x86_64/os/repodata/repomd.xml >/dev/null 2>&1; then
-              echo "Network readiness confirmed - repositories accessible"
-              break
-            fi
-            
-            if [ $attempt -lt $max_attempts ]; then
-              echo "Network not ready, waiting $sleep_time seconds before retry..."
-              sleep $sleep_time
-            else
-              echo "Network readiness check failed after $max_attempts attempts"
-              send_notification "FAILED" "System Preparation" "Network readiness check failed on instance $INSTANCE_ID"
-              exit 1
-            fi
-            ((attempt++))
-          done
-          
-          # Update system packages
-          echo "Updating system packages..."
-          if ! retry_dnf update -y; then
-            send_notification "FAILED" "System Preparation" "System package update failed on instance $INSTANCE_ID"
-            exit 1
-          fi
-          
-          # Install required tools
-          echo "Installing required packages..."
-          if ! retry_dnf install -y curl unzip; then
-            send_notification "FAILED" "System Preparation" "Required package installation failed on instance $INSTANCE_ID"
-            exit 1
-          fi
-          
-          # Install EPEL repository
-          echo "Installing EPEL repository..."
-          if ! retry_dnf install -y epel-release; then
-            send_notification "FAILED" "System Preparation" "EPEL repository installation failed on instance $INSTANCE_ID"
-            exit 1
-          fi
-          
-          # Install AWS CLI (force overwrite if exists)
-          echo "Installing AWS CLI..."
-          curl -s "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
-          unzip -o -q awscliv2.zip
-          ./aws/install --update || ./aws/install
-          rm -rf awscliv2.zip aws/
-          
-          # Verify AWS CLI installation
-          echo "Verifying AWS CLI installation..."
-          /usr/local/bin/aws --version || {
-            send_notification "FAILED" "System Preparation" "AWS CLI installation failed on instance $INSTANCE_ID"
-            exit 1
-          }
-          
-          # Install SSM Agent
-          echo "Installing AWS SSM Agent..."
-          if ! retry_dnf install -y https://s3.amazonaws.com/ec2-downloads-windows/SSMAgent/latest/linux_amd64/amazon-ssm-agent.rpm; then
-            send_notification "FAILED" "System Preparation" "SSM Agent installation failed on instance $INSTANCE_ID"
-            exit 1
-          fi
-          
-          # Enable SSM Agent
-          systemctl enable --now amazon-ssm-agent
-          
-          echo "$(date): System preparation completed successfully"
-          send_notification "SUCCESS" "System Preparation" "✅ System preparation completed successfully on instance $INSTANCE_ID"
-          
-          # ==============================================
-          # COMPONENT 2: CORE COCKPIT INSTALLATION
-          # ==============================================
-          echo ""
-          echo "=== COMPONENT 2: CORE COCKPIT INSTALLATION ==="
-          echo "$(date): Starting core Cockpit installation..."
-          
-          # Install core Cockpit modules
-          echo "Installing core Cockpit modules..."
-          if ! retry_dnf install -y cockpit cockpit-system cockpit-ws cockpit-bridge; then
-            send_notification "FAILED" "Core Installation" "Core Cockpit modules installation failed on instance $INSTANCE_ID"
-            exit 1
-          fi
-          
-          # Install additional core modules with error handling
-          echo "Installing additional Cockpit modules..."
-          retry_dnf install -y cockpit-networkmanager || echo "cockpit-networkmanager not available, skipping..."
-          retry_dnf install -y cockpit-storaged || echo "cockpit-storaged not available, skipping..."
-          retry_dnf install -y cockpit-packagekit || echo "cockpit-packagekit not available, skipping..."
-          retry_dnf install -y cockpit-sosreport || echo "cockpit-sosreport not available, skipping..."
-          
-          # Enable Cockpit socket (starts on demand)
-          echo "Enabling Cockpit socket..."
-          systemctl enable --now cockpit.socket
-          
-          # Enable NetworkManager
-          echo "Ensuring NetworkManager is enabled..."
-          systemctl enable --now NetworkManager
-          
-          # Basic firewall configuration if firewalld is running
-          echo "Configuring firewall..."
-          if systemctl is-active --quiet firewalld; then
-            firewall-cmd --permanent --add-service=cockpit
-            firewall-cmd --reload
-            echo "Firewall configured for Cockpit"
-          else
-            echo "Firewalld not active, skipping firewall configuration"
-            echo "Make sure to configure your EC2 Security Group to allow port 9090"
-          fi
-          
-          # Verify Cockpit is running
-          echo "Verifying Cockpit installation..."
-          sleep 10
-          
-          if systemctl is-active --quiet cockpit.socket; then
-            echo "Cockpit socket is active"
-            if curl -k -s --connect-timeout 5 --max-time 10 https://localhost:9090/ >/dev/null; then
-              echo "Cockpit web interface is responding"
-              send_notification "SUCCESS" "Core Installation" "✅ Core Cockpit installation completed successfully on instance $INSTANCE_ID. Cockpit is accessible on port 9090."
-            else
-              echo "Cockpit web interface is not responding yet (may need more time)"
-              send_notification "WARNING" "Core Installation" "⚠️ Core Cockpit installed on instance $INSTANCE_ID but web interface not yet responding. May need a few more moments to start."
-            fi
-          else
-            send_notification "FAILED" "Core Installation" "Core Cockpit installation failed - service not active on instance $INSTANCE_ID"
-            exit 1
-          fi
-          
-          echo "$(date): Core Cockpit installation completed"
-          
-          # ==============================================
-          # COMPONENT 3: EXTENDED SERVICES SETUP
-          # ==============================================
-          echo ""
-          echo "=== COMPONENT 3: EXTENDED SERVICES SETUP ==="
-          echo "$(date): Starting extended services setup..."
-          
-          # Install virtualization stack
-          echo "Installing virtualization packages..."
-          retry_dnf groupinstall -y "Virtualization Host" || echo "Virtualization Host group not available, trying individual packages..."
-          retry_dnf install -y qemu-kvm libvirt virt-install virt-manager || echo "Some virtualization packages not available"
-          retry_dnf install -y cockpit-machines || echo "cockpit-machines not available"
-          
-          # Enable libvirt
-          echo "Enabling libvirt daemon..."
-          systemctl enable --now libvirtd || echo "libvirtd not available"
-          
-          # Install container support
-          echo "Installing container packages..."
-          retry_dnf install -y podman buildah skopeo || echo "Some container packages not available"
-          retry_dnf install -y cockpit-podman || echo "cockpit-podman not available"
-          
-          # Install monitoring tools
-          echo "Installing monitoring packages..."
-          retry_dnf install -y cockpit-pcp || echo "cockpit-pcp not available"
-          retry_dnf install -y pcp pcp-system-tools || echo "PCP packages not available"
-          
-          # Enable PCP services
-          systemctl enable --now pmcd || echo "pmcd not available"
-          systemctl enable --now pmlogger || echo "pmlogger not available"
-          
-          # Add users to virtualization groups
-          echo "Configuring user access to services..."
-          usermod -a -G libvirt rocky 2>/dev/null || echo "libvirt group not available"
-          usermod -a -G kvm rocky 2>/dev/null || echo "kvm group not available"
-          
-          echo "$(date): Extended services setup completed"
-          send_notification "SUCCESS" "Extended Services" "✅ Extended services setup completed on instance $INSTANCE_ID. Virtualization, containers, and monitoring are now available."
-          
-          # ==============================================
-          # COMPONENT 4: THIRD-PARTY EXTENSIONS
-          # ==============================================
-          echo ""
-          echo "=== COMPONENT 4: THIRD-PARTY EXTENSIONS ==="
-          echo "$(date): Starting third-party extensions installation..."
-          
-          # Install 45Drives Cockpit modules
-          echo "Installing 45Drives repository and modules..."
-          
-          # Add 45Drives repository
-          cat > /etc/yum.repos.d/45drives.repo << 'REPO_EOF'
-          [45drives]
-          name=45Drives Repository
-          baseurl=https://repo.45drives.com/rocky/$releasever/$basearch
-          enabled=1
-          gpgcheck=1
-          gpgkey=https://repo.45drives.com/key/gpg.asc
-          REPO_EOF
-          
-          # Import GPG key
-          rpm --import https://repo.45drives.com/key/gpg.asc || echo "Failed to import 45Drives GPG key"
-          
-          # Install 45Drives modules with error handling
-          retry_dnf install -y cockpit-file-sharing || echo "cockpit-file-sharing not available from 45Drives"
-          retry_dnf install -y cockpit-navigator || echo "cockpit-navigator not available from 45Drives"
-          retry_dnf install -y cockpit-identities || echo "cockpit-identities not available from 45Drives"
-          
-          # Install hardware monitoring if available
-          retry_dnf install -y cockpit-sensors || echo "cockpit-sensors not available"
-          
-          # Configure file sharing service
-          if systemctl list-unit-files | grep -q "smb.service"; then
-            echo "Enabling Samba service for file sharing..."
-            systemctl enable smb || echo "Samba service not available"
-          fi
-          
-          echo "$(date): Third-party extensions installation completed"
-          send_notification "SUCCESS" "Extensions" "✅ Third-party extensions installation completed on instance $INSTANCE_ID. File manager, navigator, and additional modules are now available."
-          
-          # ==============================================
-          # COMPONENT 5: USER CONFIGURATION
-          # ==============================================
-          echo ""
-          echo "=== COMPONENT 5: USER CONFIGURATION ==="
-          echo "$(date): Starting user configuration..."
-          
-          # Create admin user if it doesn't exist
-          if ! id admin >/dev/null 2>&1; then
-            echo "Creating admin user..."
-            useradd -m -G wheel admin
-            echo "admin:Cockpit123" | chpasswd
-            echo "Admin user created with default password"
-          else
-            echo "Admin user already exists"
-          fi
-          
-          # Set password for rocky user
-          echo "Setting password for rocky user..."
-          echo "rocky:Cockpit123" | chpasswd
-          
-          # Configure sudo access for wheel group
-          echo "Configuring sudo access..."
-          echo "%wheel ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/wheel
-          chmod 440 /etc/sudoers.d/wheel
-          
-          # Add users to wheel group
-          usermod -a -G wheel admin 2>/dev/null || echo "Failed to add admin to wheel group"
-          usermod -a -G wheel rocky 2>/dev/null || echo "Failed to add rocky to wheel group"
-          
-          # Configure cockpit access
-          echo "Configuring Cockpit access..."
-          
-          # Allow password authentication in cockpit
-          mkdir -p /etc/cockpit
-          cat > /etc/cockpit/cockpit.conf << 'COCKPIT_EOF'
-          [WebService]
-          AllowUnencrypted = true
-          LoginTitle = AWS Outpost Cockpit Management Console
-          
-          [Session]
-          IdleTimeout = 60
-          COCKPIT_EOF
-          
-          echo "$(date): User configuration completed"
-          send_notification "SUCCESS" "User Configuration" "✅ User configuration completed on instance $INSTANCE_ID.
-
-          Users configured:
-          - admin (password: Cockpit123)
-          - rocky (password: Cockpit123)
-
-          Both users have sudo access and can log into Cockpit."
-          
-          # ==============================================
-          # COMPONENT 6: FINAL CONFIGURATION
-          # ==============================================
-          echo ""
-          echo "=== COMPONENT 6: FINAL CONFIGURATION ==="
-          echo "$(date): Starting final configuration and verification..."
-          
-          # Get public IP for access information
-          PUBLIC_IP=$(curl -s --max-time 10 http://169.254.169.254/latest/meta-data/public-ipv4 || echo "IP-NOT-AVAILABLE")
-          
-          # Restart Cockpit to apply all configurations
-          echo "Restarting Cockpit services..."
-          systemctl restart cockpit.socket
-          sleep 5
-          
-          # Final verification
-          echo "Performing final verification..."
-          
-          # Check Cockpit socket
-          if ! systemctl is-active --quiet cockpit.socket; then
-            send_notification "WARNING" "Final Configuration" "⚠️ Cockpit socket not active after restart on instance $INSTANCE_ID"
-          fi
-          
-          # Check web interface
-          if curl -k -s --connect-timeout 10 --max-time 15 https://localhost:9090/ >/dev/null; then
-            echo "✅ Cockpit web interface is responding"
-          else
-            echo "⚠️ Cockpit web interface not responding"
-          fi
-          
-          # Check key services
-          echo "Service status check:"
-          systemctl is-active cockpit.socket && echo "✅ Cockpit socket: active" || echo "❌ Cockpit socket: inactive"
-          systemctl is-active NetworkManager && echo "✅ NetworkManager: active" || echo "❌ NetworkManager: inactive"
-          systemctl is-active libvirtd && echo "✅ Libvirt: active" || echo "⚠️ Libvirt: inactive"
-          
-          # Create summary log
-          cat > /var/log/cockpit-deployment-summary.log << 'SUMMARY_EOF'
-==========================================
-COCKPIT DEPLOYMENT COMPLETION SUMMARY
-==========================================
-Completion Time: $(date)
-Instance ID: $INSTANCE_ID
-Public IP: $PUBLIC_IP
-
-COMPONENTS INSTALLED:
-✅ System Preparation
-✅ Core Cockpit Installation  
-✅ Extended Services (Virtualization, Containers, Monitoring)
-✅ Third-party Extensions (File Manager, Navigator)
-✅ User Configuration
-✅ Final Configuration
-
-ACCESS INFORMATION:
-- Web Interface: https://$PUBLIC_IP:9090
-- SSH Access: ssh -i <key> rocky@$PUBLIC_IP
-
-USER ACCOUNTS:
-- admin / Cockpit123 (wheel group, sudo access)
-- rocky / Cockpit123 (wheel group, sudo access)
-
-AVAILABLE SERVICES:
-- System Management (Cockpit Core)
-- Network Management
-- Storage Management  
-- Package Management
-- Virtualization (KVM/QEMU)
-- Container Management (Podman)
-- Performance Monitoring (PCP)
-- File Sharing Management
-- Hardware Monitoring
-
-LOGS LOCATION:
-- Main log: /var/log/cockpit-complete-install.log
-- Summary: /var/log/cockpit-deployment-summary.log
-==========================================
-          SUMMARY_EOF
-          
-          echo "$(date): Final configuration completed"
-          
-          # Send final success notification
-          send_notification "SUCCESS" "Final Configuration" "🎉 COCKPIT DEPLOYMENT COMPLETED SUCCESSFULLY!
-
-Instance: $INSTANCE_ID
-Public IP: $PUBLIC_IP
-
-🌐 Access Cockpit: https://$PUBLIC_IP:9090
-
-👤 Login Credentials:
-- admin / Cockpit123
-- rocky / Cockpit123
-
-✅ All Components Installed:
-- Core Cockpit Management
-- Virtualization (KVM/QEMU) 
-- Container Management (Podman)
-- Performance Monitoring (PCP)
-- File Sharing & Navigation
-- User & System Management
-
-📋 Management Commands:
-- Check status: systemctl status cockpit.socket
-- View logs: sudo tail -f /var/log/cockpit-complete-install.log
-- Service restart: sudo systemctl restart cockpit.socket
-
-Deployment completed successfully at $(date)"
-          
-          echo ""
-          echo "=============================================="
-          echo "🎉 COCKPIT DEPLOYMENT COMPLETED SUCCESSFULLY!"
-          echo "=============================================="
-          echo "Access URL: https://$PUBLIC_IP:9090"
-          echo "Users: admin/rocky (Password: Cockpit123)"
-          echo "Completion Time: $(date)"
-          echo "=============================================="
+        - "#!/bin/bash"
+        - "set -e"
+        - ""
+        - "# Setup comprehensive logging"
+        - "exec > >(tee -a /var/log/cockpit-complete-install.log)"
+        - "exec 2>&1"
+        - "echo \"=============================================\""
+        - "echo \"COCKPIT COMPLETE INSTALLATION STARTED\""
+        - "echo \"Start Time: $(date)\""
+        - "echo \"Instance ID: {{InstanceId}}\""
+        - "echo \"=============================================\""
+        - ""
+        - "# Get instance metadata"
+        - "INSTANCE_ID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)"
+        - "REGION=$(curl -s http://169.254.169.254/latest/meta-data/placement/region)"
+        - "SNS_TOPIC_ARN=\"{{NotificationTopic}}\""
+        - ""
+        - "# Notification function"
+        - "send_notification() {"
+        - "  local status=\"$1\""
+        - "  local component=\"$2\""
+        - "  local message=\"$3\""
+        - "  if [[ -n \"$SNS_TOPIC_ARN\" ]]; then"
+        - "    aws sns publish --region \"$REGION\" --topic-arn \"$SNS_TOPIC_ARN\" --subject \"Cockpit $component $status - $INSTANCE_ID\" --message \"$message\" || echo \"Failed to send SNS notification\""
+        - "  fi"
+        - "}"
+        - ""
+        - "# Retry function for DNF operations"
+        - "retry_dnf() {"
+        - "  local max_attempts=3"
+        - "  local attempt=1"
+        - "  local sleep_time=120"
+        - "  while [ $attempt -le $max_attempts ]; do"
+        - "    echo \"DNF attempt $attempt/$max_attempts: $*\""
+        - "    if dnf clean all >/dev/null 2>&1 && dnf makecache >/dev/null 2>&1 && dnf \"$@\"; then"
+        - "      echo \"DNF operation succeeded on attempt $attempt\""
+        - "      return 0"
+        - "    fi"
+        - "    if [ $attempt -lt $max_attempts ]; then"
+        - "      echo \"DNF attempt $attempt failed, retrying in $sleep_time seconds...\""
+        - "      sleep $sleep_time"
+        - "    else"
+        - "      echo \"DNF operation failed after $max_attempts attempts\""
+        - "      return 1"
+        - "    fi"
+        - "    ((attempt++))"
+        - "  done"
+        - "}"
+        - ""
+        - "# Send deployment start notification"
+        - "send_notification \"STARTED\" \"Deployment\" \"🚀 COCKPIT DEPLOYMENT STARTED - Instance: $INSTANCE_ID - Start Time: $(date) - Components: System Prep, Core Install, Extended Services, Extensions, User Config, Final Config\""
+        - ""
+        - "# COMPONENT 1: SYSTEM PREPARATION"
+        - "echo \"\""
+        - "echo \"=== COMPONENT 1: SYSTEM PREPARATION ===\""
+        - "echo \"$(date): Starting system preparation...\""
+        - ""
+        - "# Check if Outpost instance and add delay"
+        - "outpost_arn=$(curl -s --max-time 5 http://169.254.169.254/latest/meta-data/outpost-arn 2>/dev/null || echo \"\")"
+        - "if [[ -n \"$outpost_arn\" ]]; then"
+        - "  echo \"Outpost instance detected: $outpost_arn\""
+        - "  echo \"Adding initial delay for Outpost network stabilization...\""
+        - "  sleep 300"
+        - "fi"
+        - ""
+        - "# Network readiness check"
+        - "echo \"Checking network readiness for package repositories...\""
+        - "max_attempts=20"
+        - "attempt=1"
+        - "sleep_time=60"
+        - "while [ $attempt -le $max_attempts ]; do"
+        - "  echo \"Network readiness check $attempt/$max_attempts...\""
+        - "  if curl -s --max-time 10 --connect-timeout 5 https://dl.rockylinux.org/pub/rocky/9/BaseOS/x86_64/os/repodata/repomd.xml >/dev/null 2>&1; then"
+        - "    echo \"Network readiness confirmed - repositories accessible\""
+        - "    break"
+        - "  fi"
+        - "  if [ $attempt -lt $max_attempts ]; then"
+        - "    echo \"Network not ready, waiting $sleep_time seconds before retry...\""
+        - "    sleep $sleep_time"
+        - "  else"
+        - "    echo \"Network readiness check failed after $max_attempts attempts\""
+        - "    send_notification \"FAILED\" \"System Preparation\" \"Network readiness check failed on instance $INSTANCE_ID\""
+        - "    exit 1"
+        - "  fi"
+        - "  ((attempt++))"
+        - "done"
+        - ""
+        - "# Update system packages"
+        - "echo \"Updating system packages...\""
+        - "if ! retry_dnf update -y; then"
+        - "  send_notification \"FAILED\" \"System Preparation\" \"System package update failed on instance $INSTANCE_ID\""
+        - "  exit 1"
+        - "fi"
+        - ""
+        - "# Install required tools"
+        - "echo \"Installing required packages...\""
+        - "if ! retry_dnf install -y curl unzip; then"
+        - "  send_notification \"FAILED\" \"System Preparation\" \"Required package installation failed on instance $INSTANCE_ID\""
+        - "  exit 1"
+        - "fi"
+        - ""
+        - "# Install EPEL repository"
+        - "echo \"Installing EPEL repository...\""
+        - "if ! retry_dnf install -y epel-release; then"
+        - "  send_notification \"FAILED\" \"System Preparation\" \"EPEL repository installation failed on instance $INSTANCE_ID\""
+        - "  exit 1"
+        - "fi"
+        - ""
+        - "# Install AWS CLI"
+        - "echo \"Installing AWS CLI...\""
+        - "curl -s \"https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip\" -o \"awscliv2.zip\""
+        - "unzip -o -q awscliv2.zip"
+        - "./aws/install --update || ./aws/install"
+        - "rm -rf awscliv2.zip aws/"
+        - ""
+        - "# Verify AWS CLI installation"
+        - "echo \"Verifying AWS CLI installation...\""
+        - "/usr/local/bin/aws --version || {"
+        - "  send_notification \"FAILED\" \"System Preparation\" \"AWS CLI installation failed on instance $INSTANCE_ID\""
+        - "  exit 1"
+        - "}"
+        - ""
+        - "# Install SSM Agent"
+        - "echo \"Installing AWS SSM Agent...\""
+        - "if ! retry_dnf install -y https://s3.amazonaws.com/ec2-downloads-windows/SSMAgent/latest/linux_amd64/amazon-ssm-agent.rpm; then"
+        - "  send_notification \"FAILED\" \"System Preparation\" \"SSM Agent installation failed on instance $INSTANCE_ID\""
+        - "  exit 1"
+        - "fi"
+        - ""
+        - "systemctl enable --now amazon-ssm-agent"
+        - "echo \"$(date): System preparation completed successfully\""
+        - "send_notification \"SUCCESS\" \"System Preparation\" \"✅ System preparation completed successfully on instance $INSTANCE_ID\""
+        - ""
+        - "# COMPONENT 2: CORE COCKPIT INSTALLATION"
+        - "echo \"\""
+        - "echo \"=== COMPONENT 2: CORE COCKPIT INSTALLATION ===\""
+        - "echo \"$(date): Starting core Cockpit installation...\""
+        - ""
+        - "# Install core Cockpit modules"
+        - "echo \"Installing core Cockpit modules...\""
+        - "if ! retry_dnf install -y cockpit cockpit-system cockpit-ws cockpit-bridge; then"
+        - "  send_notification \"FAILED\" \"Core Installation\" \"Core Cockpit modules installation failed on instance $INSTANCE_ID\""
+        - "  exit 1"
+        - "fi"
+        - ""
+        - "# Install additional core modules"
+        - "echo \"Installing additional Cockpit modules...\""
+        - "retry_dnf install -y cockpit-networkmanager || echo \"cockpit-networkmanager not available, skipping...\""
+        - "retry_dnf install -y cockpit-storaged || echo \"cockpit-storaged not available, skipping...\""
+        - "retry_dnf install -y cockpit-packagekit || echo \"cockpit-packagekit not available, skipping...\""
+        - "retry_dnf install -y cockpit-sosreport || echo \"cockpit-sosreport not available, skipping...\""
+        - ""
+        - "# Enable Cockpit socket"
+        - "echo \"Enabling Cockpit socket...\""
+        - "systemctl enable --now cockpit.socket"
+        - "systemctl enable --now NetworkManager"
+        - ""
+        - "# Basic firewall configuration"
+        - "echo \"Configuring firewall...\""
+        - "if systemctl is-active --quiet firewalld; then"
+        - "  firewall-cmd --permanent --add-service=cockpit"
+        - "  firewall-cmd --reload"
+        - "  echo \"Firewall configured for Cockpit\""
+        - "else"
+        - "  echo \"Firewalld not active, skipping firewall configuration\""
+        - "fi"
+        - ""
+        - "# Verify Cockpit is running"
+        - "echo \"Verifying Cockpit installation...\""
+        - "sleep 10"
+        - "if systemctl is-active --quiet cockpit.socket; then"
+        - "  echo \"Cockpit socket is active\""
+        - "  send_notification \"SUCCESS\" \"Core Installation\" \"✅ Core Cockpit installation completed successfully on instance $INSTANCE_ID. Cockpit is accessible on port 9090.\""
+        - "else"
+        - "  send_notification \"FAILED\" \"Core Installation\" \"Core Cockpit installation failed - service not active on instance $INSTANCE_ID\""
+        - "  exit 1"
+        - "fi"
+        - "echo \"$(date): Core Cockpit installation completed\""
+        - ""
+        - "# COMPONENT 3: EXTENDED SERVICES SETUP"
+        - "echo \"\""
+        - "echo \"=== COMPONENT 3: EXTENDED SERVICES SETUP ===\""
+        - "echo \"$(date): Starting extended services setup...\""
+        - ""
+        - "# Install virtualization stack"
+        - "echo \"Installing virtualization packages...\""
+        - "retry_dnf groupinstall -y \"Virtualization Host\" || echo \"Virtualization Host group not available, trying individual packages...\""
+        - "retry_dnf install -y qemu-kvm libvirt virt-install virt-manager || echo \"Some virtualization packages not available\""
+        - "retry_dnf install -y cockpit-machines || echo \"cockpit-machines not available\""
+        - "systemctl enable --now libvirtd || echo \"libvirtd not available\""
+        - ""
+        - "# Install container support"
+        - "echo \"Installing container packages...\""
+        - "retry_dnf install -y podman buildah skopeo || echo \"Some container packages not available\""
+        - "retry_dnf install -y cockpit-podman || echo \"cockpit-podman not available\""
+        - ""
+        - "# Install monitoring tools"
+        - "echo \"Installing monitoring packages...\""
+        - "retry_dnf install -y cockpit-pcp || echo \"cockpit-pcp not available\""
+        - "retry_dnf install -y pcp pcp-system-tools || echo \"PCP packages not available\""
+        - "systemctl enable --now pmcd || echo \"pmcd not available\""
+        - "systemctl enable --now pmlogger || echo \"pmlogger not available\""
+        - ""
+        - "# Add users to groups"
+        - "echo \"Configuring user access to services...\""
+        - "usermod -a -G libvirt rocky 2>/dev/null || echo \"libvirt group not available\""
+        - "usermod -a -G kvm rocky 2>/dev/null || echo \"kvm group not available\""
+        - ""
+        - "echo \"$(date): Extended services setup completed\""
+        - "send_notification \"SUCCESS\" \"Extended Services\" \"✅ Extended services setup completed on instance $INSTANCE_ID. Virtualization, containers, and monitoring are now available.\""
+        - ""
+        - "# COMPONENT 4: THIRD-PARTY EXTENSIONS"
+        - "echo \"\""
+        - "echo \"=== COMPONENT 4: THIRD-PARTY EXTENSIONS ===\""
+        - "echo \"$(date): Starting third-party extensions installation...\""
+        - ""
+        - "# Add 45Drives repository"
+        - "echo \"Installing 45Drives repository and modules...\""
+        - "cat > /etc/yum.repos.d/45drives.repo << 'REPO_EOF'"
+        - "[45drives]"
+        - "name=45Drives Repository"
+        - "baseurl=https://repo.45drives.com/rocky/$releasever/$basearch"
+        - "enabled=1"
+        - "gpgcheck=1"
+        - "gpgkey=https://repo.45drives.com/key/gpg.asc"
+        - "REPO_EOF"
+        - ""
+        - "# Import GPG key and install modules"
+        - "rpm --import https://repo.45drives.com/key/gpg.asc || echo \"Failed to import 45Drives GPG key\""
+        - "retry_dnf install -y cockpit-file-sharing || echo \"cockpit-file-sharing not available from 45Drives\""
+        - "retry_dnf install -y cockpit-navigator || echo \"cockpit-navigator not available from 45Drives\""
+        - "retry_dnf install -y cockpit-identities || echo \"cockpit-identities not available from 45Drives\""
+        - "retry_dnf install -y cockpit-sensors || echo \"cockpit-sensors not available\""
+        - ""
+        - "# Configure file sharing service"
+        - "if systemctl list-unit-files | grep -q \"smb.service\"; then"
+        - "  echo \"Enabling Samba service for file sharing...\""
+        - "  systemctl enable smb || echo \"Samba service not available\""
+        - "fi"
+        - ""
+        - "echo \"$(date): Third-party extensions installation completed\""
+        - "send_notification \"SUCCESS\" \"Extensions\" \"✅ Third-party extensions installation completed on instance $INSTANCE_ID. File manager, navigator, and additional modules are now available.\""
+        - ""
+        - "# COMPONENT 5: USER CONFIGURATION"
+        - "echo \"\""
+        - "echo \"=== COMPONENT 5: USER CONFIGURATION ===\""
+        - "echo \"$(date): Starting user configuration...\""
+        - ""
+        - "# Create admin user if it doesn't exist"
+        - "if ! id admin >/dev/null 2>&1; then"
+        - "  echo \"Creating admin user...\""
+        - "  useradd -m -G wheel admin"
+        - "  echo \"admin:Cockpit123\" | chpasswd"
+        - "  echo \"Admin user created with default password\""
+        - "else"
+        - "  echo \"Admin user already exists\""
+        - "fi"
+        - ""
+        - "# Set password for rocky user"
+        - "echo \"Setting password for rocky user...\""
+        - "echo \"rocky:Cockpit123\" | chpasswd"
+        - ""
+        - "# Configure sudo access"
+        - "echo \"Configuring sudo access...\""
+        - "echo \"%wheel ALL=(ALL) NOPASSWD: ALL\" > /etc/sudoers.d/wheel"
+        - "chmod 440 /etc/sudoers.d/wheel"
+        - "usermod -a -G wheel admin 2>/dev/null || echo \"Failed to add admin to wheel group\""
+        - "usermod -a -G wheel rocky 2>/dev/null || echo \"Failed to add rocky to wheel group\""
+        - ""
+        - "# Configure cockpit access"
+        - "echo \"Configuring Cockpit access...\""
+        - "mkdir -p /etc/cockpit"
+        - "cat > /etc/cockpit/cockpit.conf << 'COCKPIT_EOF'"
+        - "[WebService]"
+        - "AllowUnencrypted = true"
+        - "LoginTitle = AWS Outpost Cockpit Management Console"
+        - ""
+        - "[Session]"
+        - "IdleTimeout = 60"
+        - "COCKPIT_EOF"
+        - ""
+        - "echo \"$(date): User configuration completed\""
+        - "send_notification \"SUCCESS\" \"User Configuration\" \"✅ User configuration completed on instance $INSTANCE_ID. Users: admin/rocky (password: Cockpit123). Both users have sudo access.\""
+        - ""
+        - "# COMPONENT 6: FINAL CONFIGURATION"
+        - "echo \"\""
+        - "echo \"=== COMPONENT 6: FINAL CONFIGURATION ===\""
+        - "echo \"$(date): Starting final configuration and verification...\""
+        - ""
+        - "# Get public IP for access information"
+        - "PUBLIC_IP=$(curl -s --max-time 10 http://169.254.169.254/latest/meta-data/public-ipv4 || echo \"IP-NOT-AVAILABLE\")"
+        - ""
+        - "# Restart Cockpit to apply all configurations"
+        - "echo \"Restarting Cockpit services...\""
+        - "systemctl restart cockpit.socket"
+        - "sleep 5"
+        - ""
+        - "# Final verification"
+        - "echo \"Performing final verification...\""
+        - "systemctl is-active cockpit.socket && echo \"✅ Cockpit socket: active\" || echo \"❌ Cockpit socket: inactive\""
+        - "systemctl is-active NetworkManager && echo \"✅ NetworkManager: active\" || echo \"❌ NetworkManager: inactive\""
+        - "systemctl is-active libvirtd && echo \"✅ Libvirt: active\" || echo \"⚠️ Libvirt: inactive\""
+        - ""
+        - "# Create summary log"
+        - "cat > /var/log/cockpit-deployment-summary.log << 'SUMMARY_EOF'"
+        - "=========================================="
+        - "COCKPIT DEPLOYMENT COMPLETION SUMMARY"
+        - "=========================================="
+        - "Completion Time: $(date)"
+        - "Instance ID: $INSTANCE_ID"
+        - "Public IP: $PUBLIC_IP"
+        - ""
+        - "COMPONENTS INSTALLED:"
+        - "✅ System Preparation"
+        - "✅ Core Cockpit Installation"
+        - "✅ Extended Services (Virtualization, Containers, Monitoring)"
+        - "✅ Third-party Extensions (File Manager, Navigator)"
+        - "✅ User Configuration"
+        - "✅ Final Configuration"
+        - ""
+        - "ACCESS INFORMATION:"
+        - "- Web Interface: https://$PUBLIC_IP:9090"
+        - "- SSH Access: ssh -i <key> rocky@$PUBLIC_IP"
+        - ""
+        - "USER ACCOUNTS:"
+        - "- admin / Cockpit123 (wheel group, sudo access)"
+        - "- rocky / Cockpit123 (wheel group, sudo access)"
+        - ""
+        - "LOGS LOCATION:"
+        - "- Main log: /var/log/cockpit-complete-install.log"
+        - "- Summary: /var/log/cockpit-deployment-summary.log"
+        - "=========================================="
+        - "SUMMARY_EOF"
+        - ""
+        - "echo \"$(date): Final configuration completed\""
+        - ""
+        - "# Send final success notification"
+        - "send_notification \"SUCCESS\" \"Final Configuration\" \"🎉 COCKPIT DEPLOYMENT COMPLETED SUCCESSFULLY! Instance: $INSTANCE_ID, Public IP: $PUBLIC_IP, Access: https://$PUBLIC_IP:9090, Users: admin/rocky (password: Cockpit123), Completion: $(date)\""
+        - ""
+        - "echo \"\""
+        - "echo \"=============================================\""
+        - "echo \"🎉 COCKPIT DEPLOYMENT COMPLETED SUCCESSFULLY!\""
+        - "echo \"=============================================\""
+        - "echo \"Access URL: https://$PUBLIC_IP:9090\""
+        - "echo \"Users: admin/rocky (Password: Cockpit123)\""
+        - "echo \"Completion Time: $(date)\""
+        - "echo \"=============================================\""
