@@ -1,0 +1,139 @@
+schemaVersion: "2.2"
+description: "User Configuration and Security Setup for Cockpit"
+parameters:
+  InstanceId:
+    type: String
+    description: The instance ID to configure
+  NotificationTopic:
+    type: String
+    description: SNS topic ARN for notifications
+    default: ""
+mainSteps:
+  - action: "aws:runShellScript"
+    name: "UserConfiguration"
+    inputs:
+      timeoutSeconds: "600"
+      runCommand:
+        - |
+          #!/bin/bash
+          set -e
+          
+          # Setup logging
+          exec > >(tee -a /var/log/cockpit-user-config.log)
+          exec 2>&1
+          echo "Starting user configuration at $(date)"
+          
+          # Get instance metadata for notifications
+          INSTANCE_ID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
+          REGION=$(curl -s http://169.254.169.254/latest/meta-data/placement/region)
+          SNS_TOPIC_ARN="{{NotificationTopic}}"
+          
+          # Notification function
+          send_notification() {
+            local status="$1"
+            local message="$2"
+            
+            if [[ -n "$SNS_TOPIC_ARN" ]]; then
+              aws sns publish \
+                --region "$REGION" \
+                --topic-arn "$SNS_TOPIC_ARN" \
+                --subject "Cockpit User Config $status - $INSTANCE_ID" \
+                --message "$message" >/dev/null 2>&1 || echo "Failed to send SNS notification"
+            fi
+          }
+          
+          # Send start notification
+          send_notification "STARTED" "User configuration started on instance $INSTANCE_ID"
+          
+          # Create admin user for Cockpit access
+          echo "Creating admin user for Cockpit access..."
+          if ! id "admin" &>/dev/null; then
+            useradd -m -G wheel,libvirt admin
+            echo 'admin:Cockpit123' | chpasswd
+            echo "Created admin user with username 'admin' and password 'Cockpit123'"
+          else
+            echo "Admin user already exists"
+            # Ensure admin is in correct groups
+            usermod -aG wheel,libvirt admin
+            echo 'admin:Cockpit123' | chpasswd
+            echo "Updated admin user groups and password"
+          fi
+          
+          # Configure rocky user for Cockpit access
+          echo "Configuring rocky user for Cockpit access..."
+          if id "rocky" &>/dev/null; then
+            usermod -aG wheel,libvirt rocky
+            echo 'rocky:Cockpit123' | chpasswd
+            echo "Set password for rocky user: 'Cockpit123'"
+          else
+            echo "Rocky user not found, skipping rocky user configuration"
+          fi
+          
+          # Configure ec2-user if it exists
+          echo "Configuring ec2-user for Cockpit access..."
+          if id "ec2-user" &>/dev/null; then
+            usermod -aG libvirt,wheel ec2-user
+            echo "ec2-user configured for Cockpit access"
+          else
+            echo "ec2-user not found, skipping ec2-user configuration"
+          fi
+          
+          # Create Cockpit startup service to ensure it starts on boot
+          echo "Creating Cockpit startup service..."
+          cat > /etc/systemd/system/cockpit-startup.service << 'EOF'
+          [Unit]
+          Description=Ensure Cockpit is running
+          After=network.target
+          
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/bin/systemctl start cockpit.socket
+          RemainAfterExit=yes
+          
+          [Install]
+          WantedBy=multi-user.target
+          EOF
+          
+          # Enable the startup service
+          systemctl daemon-reload
+          systemctl enable cockpit-startup.service
+          echo "Cockpit startup service created and enabled"
+          
+          # Configure sudoers for wheel group (ensure passwordless sudo for admin tasks)
+          echo "Configuring sudo access..."
+          if ! grep -q "^%wheel.*NOPASSWD" /etc/sudoers; then
+            echo "%wheel ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers.d/wheel-nopasswd
+            echo "Configured passwordless sudo for wheel group"
+          else
+            echo "Wheel group already configured for sudo access"
+          fi
+          
+          # Set proper permissions on sudoers file
+          chmod 440 /etc/sudoers.d/wheel-nopasswd
+          
+          # Create user summary
+          user_summary=""
+          
+          for user in admin rocky ec2-user; do
+            if id "$user" &>/dev/null; then
+              groups=$(groups "$user" | cut -d: -f2 | tr -d ' ')
+              user_summary="$user_summary\n✅ User $user: configured (groups: $groups)"
+            else
+              user_summary="$user_summary\n❌ User $user: not found"
+            fi
+          done
+          
+          echo -e "\nUser Configuration Summary:$user_summary"
+          
+          # Verify sudo configuration
+          echo "Verifying sudo configuration..."
+          if sudo -l -U admin | grep -q "NOPASSWD"; then
+            echo "✅ Admin user has passwordless sudo access"
+            user_summary="$user_summary\n✅ Sudo access: configured"
+          else
+            echo "❌ Admin user sudo configuration may be incomplete"
+            user_summary="$user_summary\n❌ Sudo access: may need verification"
+          fi
+          
+          send_notification "SUCCESS" "User configuration completed on instance $INSTANCE_ID.$user_summary"
+          echo "User configuration completed at $(date)"

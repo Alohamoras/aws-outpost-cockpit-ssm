@@ -1,0 +1,38 @@
+# Environment files
+.env
+
+# SSH Keys and certificates
+*.pem
+*.key
+*.crt
+*.p12
+
+# Instance tracking files
+.last-instance-id
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.temp
+*~
+
+# AWS credentials
+aws-credentials
+.aws/
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Backup files
+*.bak
+*.backup

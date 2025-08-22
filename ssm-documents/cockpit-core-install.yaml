@@ -1,0 +1,127 @@
+schemaVersion: "2.2"
+description: "Core Cockpit Installation and Basic Modules"
+parameters:
+  InstanceId:
+    type: String
+    description: The instance ID to configure
+  NotificationTopic:
+    type: String
+    description: SNS topic ARN for notifications
+    default: ""
+mainSteps:
+  - action: "aws:runShellScript"
+    name: "CoreCockpitInstall"
+    inputs:
+      timeoutSeconds: "1200"
+      runCommand:
+        - |
+          #!/bin/bash
+          set -e
+          
+          # Setup logging
+          exec > >(tee -a /var/log/cockpit-core-install.log)
+          exec 2>&1
+          echo "Starting core Cockpit installation at $(date)"
+          
+          # Get instance metadata for notifications
+          INSTANCE_ID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
+          REGION=$(curl -s http://169.254.169.254/latest/meta-data/placement/region)
+          SNS_TOPIC_ARN="{{NotificationTopic}}"
+          
+          # Notification function
+          send_notification() {
+            local status="$1"
+            local message="$2"
+            
+            if [[ -n "$SNS_TOPIC_ARN" ]]; then
+              aws sns publish \
+                --region "$REGION" \
+                --topic-arn "$SNS_TOPIC_ARN" \
+                --subject "Cockpit Core Install $status - $INSTANCE_ID" \
+                --message "$message" >/dev/null 2>&1 || echo "Failed to send SNS notification"
+            fi
+          }
+          
+          # Send start notification
+          send_notification "STARTED" "Core Cockpit installation started on instance $INSTANCE_ID"
+          
+          # Retry function for DNF operations
+          retry_dnf() {
+            local max_attempts=3
+            local attempt=1
+            local sleep_time=120
+            
+            while [ $attempt -le $max_attempts ]; do
+              echo "DNF attempt $attempt/$max_attempts: $*"
+              
+              if dnf clean all >/dev/null 2>&1 && dnf makecache >/dev/null 2>&1 && dnf "$@"; then
+                echo "DNF operation succeeded on attempt $attempt"
+                return 0
+              fi
+              
+              if [ $attempt -lt $max_attempts ]; then
+                echo "DNF attempt $attempt failed, retrying in $sleep_time seconds..."
+                sleep $sleep_time
+              else
+                echo "DNF operation failed after $max_attempts attempts"
+                return 1
+              fi
+              ((attempt++))
+            done
+          }
+          
+          # Install core Cockpit modules
+          echo "Installing core Cockpit modules..."
+          if ! retry_dnf install -y cockpit cockpit-system cockpit-ws cockpit-bridge; then
+            send_notification "FAILED" "Core Cockpit modules installation failed on instance $INSTANCE_ID"
+            exit 1
+          fi
+          
+          # Install additional core modules with error handling
+          echo "Installing additional Cockpit modules..."
+          
+          # These modules are optional but commonly available
+          retry_dnf install -y cockpit-networkmanager || echo "cockpit-networkmanager not available, skipping..."
+          retry_dnf install -y cockpit-storaged || echo "cockpit-storaged not available, skipping..."
+          retry_dnf install -y cockpit-packagekit || echo "cockpit-packagekit not available, skipping..."
+          retry_dnf install -y cockpit-sosreport || echo "cockpit-sosreport not available, skipping..."
+          
+          # Enable Cockpit socket (starts on demand)
+          echo "Enabling Cockpit socket..."
+          systemctl enable --now cockpit.socket
+          
+          # Enable NetworkManager
+          echo "Ensuring NetworkManager is enabled..."
+          systemctl enable --now NetworkManager
+          
+          # Basic firewall configuration if firewalld is running
+          echo "Configuring firewall..."
+          if systemctl is-active --quiet firewalld; then
+            firewall-cmd --permanent --add-service=cockpit
+            firewall-cmd --reload
+            echo "Firewall configured for Cockpit"
+          else
+            echo "Firewalld not active, skipping firewall configuration"
+            echo "Make sure to configure your EC2 Security Group to allow port 9090"
+          fi
+          
+          # Verify Cockpit is running
+          echo "Verifying Cockpit installation..."
+          sleep 10
+          
+          if systemctl is-active --quiet cockpit.socket; then
+            echo "Cockpit socket is active"
+            # Test if Cockpit web interface is responding
+            if curl -k -s --connect-timeout 5 --max-time 10 https://localhost:9090/ >/dev/null; then
+              echo "Cockpit web interface is responding"
+              send_notification "SUCCESS" "Core Cockpit installation completed successfully on instance $INSTANCE_ID. Cockpit is accessible on port 9090."
+            else
+              echo "Cockpit web interface is not responding yet"
+              send_notification "WARNING" "Core Cockpit installed on instance $INSTANCE_ID but web interface not yet responding. May need a few more moments to start."
+            fi
+          else
+            send_notification "FAILED" "Core Cockpit installation failed - service not active on instance $INSTANCE_ID"
+            exit 1
+          fi
+          
+          echo "Core Cockpit installation completed at $(date)"

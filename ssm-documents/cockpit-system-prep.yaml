@@ -1,0 +1,161 @@
+schemaVersion: "2.2"
+description: "System Preparation for Cockpit Installation"
+parameters:
+  InstanceId:
+    type: String
+    description: The instance ID to configure
+  NotificationTopic:
+    type: String
+    description: SNS topic ARN for notifications
+    default: ""
+mainSteps:
+  - action: "aws:runShellScript"
+    name: "SystemPreparation"
+    inputs:
+      timeoutSeconds: "1800"
+      runCommand:
+        - |
+          #!/bin/bash
+          set -e
+          
+          # Setup logging
+          exec > >(tee -a /var/log/cockpit-system-prep.log)
+          exec 2>&1
+          echo "Starting system preparation at $(date)"
+          
+          # Get instance metadata for notifications
+          INSTANCE_ID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
+          REGION=$(curl -s http://169.254.169.254/latest/meta-data/placement/region)
+          SNS_TOPIC_ARN="{{NotificationTopic}}"
+          
+          # Notification function
+          send_notification() {
+            local status="$1"
+            local message="$2"
+            
+            if [[ -n "$SNS_TOPIC_ARN" ]]; then
+              aws sns publish \
+                --region "$REGION" \
+                --topic-arn "$SNS_TOPIC_ARN" \
+                --subject "Cockpit System Prep $status - $INSTANCE_ID" \
+                --message "$message" >/dev/null 2>&1 || echo "Failed to send SNS notification"
+            fi
+          }
+          
+          # Send start notification
+          send_notification "STARTED" "System preparation component started on instance $INSTANCE_ID"
+          
+          # Network readiness check function
+          check_network_readiness() {
+            local max_attempts=20
+            local attempt=1
+            local sleep_time=60
+            
+            echo "Checking network readiness for package repositories..."
+            
+            while [ $attempt -le $max_attempts ]; do
+              echo "Network readiness check $attempt/$max_attempts..."
+              
+              if curl -s --max-time 10 --connect-timeout 5 \
+                 https://dl.rockylinux.org/pub/rocky/9/BaseOS/x86_64/os/repodata/repomd.xml >/dev/null 2>&1; then
+                echo "Network readiness confirmed - repositories accessible"
+                return 0
+              fi
+              
+              if [ $attempt -lt $max_attempts ]; then
+                echo "Network not ready, waiting $sleep_time seconds before retry..."
+                sleep $sleep_time
+              else
+                echo "Network readiness check failed after $max_attempts attempts"
+                return 1
+              fi
+              ((attempt++))
+            done
+          }
+          
+          # Retry function for DNF operations
+          retry_dnf() {
+            local max_attempts=3
+            local attempt=1
+            local sleep_time=120
+            
+            while [ $attempt -le $max_attempts ]; do
+              echo "DNF attempt $attempt/$max_attempts: $*"
+              
+              if dnf clean all >/dev/null 2>&1 && dnf makecache >/dev/null 2>&1 && dnf "$@"; then
+                echo "DNF operation succeeded on attempt $attempt"
+                return 0
+              fi
+              
+              if [ $attempt -lt $max_attempts ]; then
+                echo "DNF attempt $attempt failed, retrying in $sleep_time seconds..."
+                sleep $sleep_time
+              else
+                echo "DNF operation failed after $max_attempts attempts"
+                return 1
+              fi
+              ((attempt++))
+            done
+          }
+          
+          # Check if Outpost instance and add delay
+          outpost_arn=$(curl -s --max-time 5 http://169.254.169.254/latest/meta-data/outpost-arn 2>/dev/null || echo "")
+          if [[ -n "$outpost_arn" ]]; then
+            echo "Outpost instance detected: $outpost_arn"
+            echo "Adding initial delay for Outpost network stabilization..."
+            sleep 300  # 5 minute delay for Outpost instances
+          fi
+          
+          # Ensure network readiness
+          if ! check_network_readiness; then
+            send_notification "FAILED" "Network readiness check failed on instance $INSTANCE_ID"
+            exit 1
+          fi
+          
+          # Update system packages
+          echo "Updating system packages..."
+          if ! retry_dnf update -y; then
+            send_notification "FAILED" "System package update failed on instance $INSTANCE_ID"
+            exit 1
+          fi
+          
+          # Install required tools
+          echo "Installing required packages..."
+          if ! retry_dnf install -y curl unzip; then
+            send_notification "FAILED" "Required package installation failed on instance $INSTANCE_ID"
+            exit 1
+          fi
+          
+          # Install EPEL repository
+          echo "Installing EPEL repository..."
+          if ! retry_dnf install -y epel-release; then
+            send_notification "FAILED" "EPEL repository installation failed on instance $INSTANCE_ID"
+            exit 1
+          fi
+          
+          # Install AWS CLI
+          echo "Installing AWS CLI..."
+          curl -s "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+          unzip -q awscliv2.zip
+          ./aws/install
+          rm -rf awscliv2.zip aws/
+          
+          # Verify AWS CLI installation
+          echo "Verifying AWS CLI installation..."
+          /usr/local/bin/aws --version || {
+            send_notification "FAILED" "AWS CLI installation failed on instance $INSTANCE_ID"
+            exit 1
+          }
+          
+          # Install SSM Agent
+          echo "Installing AWS SSM Agent..."
+          if ! retry_dnf install -y https://s3.amazonaws.com/ec2-downloads-windows/SSMAgent/latest/linux_amd64/amazon-ssm-agent.rpm; then
+            send_notification "FAILED" "SSM Agent installation failed on instance $INSTANCE_ID"
+            exit 1
+          fi
+          
+          # Enable SSM Agent
+          systemctl enable --now amazon-ssm-agent
+          
+          send_notification "SUCCESS" "System preparation completed successfully on instance $INSTANCE_ID"
+          echo "System preparation completed at $(date)"
