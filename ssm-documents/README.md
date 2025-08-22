@@ -1,202 +1,97 @@
-# SSM Documents for Cockpit Installation
+# AWS Systems Manager Documents for Cockpit Deployment
 
-This directory contains modular AWS Systems Manager (SSM) documents that replace the legacy monolithic user-data script for Cockpit installation.
+This directory contains AWS SSM documents for installing and configuring Cockpit on AWS Outpost instances.
 
-## Architecture Overview
+## Current Architecture - Simplified Single Document
 
-The installation is broken down into manageable, reusable components that can be executed independently or as part of the main orchestration:
+### 🎯 **Main Installation Document**
+- `cockpit-complete-install.yaml` - Complete Cockpit installation in a single document
 
-```
-cockpit-deploy-automation (Main Orchestrator)
-├── cockpit-system-prep (System preparation)
-├── cockpit-core-install (Core Cockpit installation)
-├── cockpit-services-setup (Extended services)
-├── cockpit-extensions (Third-party modules)
-├── cockpit-user-config (User configuration)
-└── cockpit-finalize (Final configuration & notification)
-```
+## Benefits of Simplified Architecture
 
-## Document Descriptions
+### ✅ **Simplicity**
+- Single document with all components in logical sections
+- Direct parameter substitution (no complex orchestration)
+- Simple `aws ssm send-command` execution
+- Single log file for easy debugging
 
-### 1. cockpit-system-prep.yaml
-**Purpose**: System preparation and dependency installation
-- Network readiness validation with Outpost-aware delays
-- System package updates with retry logic
-- EPEL repository installation
-- AWS CLI and SSM Agent setup
-- Foundation for all subsequent components
+### ✅ **Reliability**
+- No complex automation orchestration points of failure
+- Direct SNS notifications work reliably
+- Faster execution (no automation overhead)
+- Clear component progress tracking
 
-**Critical**: Yes - Failure stops deployment
-**Estimated Time**: 5-15 minutes (longer on Outpost)
-
-### 2. cockpit-core-install.yaml
-**Purpose**: Core Cockpit installation and basic modules
-- Core Cockpit packages (cockpit, cockpit-system, cockpit-ws, cockpit-bridge)
-- Basic modules (networkmanager, storaged, packagekit, sosreport)
-- Service enablement and basic firewall configuration
-- Web interface verification
-
-**Critical**: Yes - Failure stops deployment
-**Estimated Time**: 3-5 minutes
-
-### 3. cockpit-services-setup.yaml
-**Purpose**: Extended services for virtualization, containers, and monitoring
-- Virtualization stack (libvirt, qemu-kvm, cockpit-machines)
-- Container runtime (Podman, cockpit-podman)
-- Performance monitoring (PCP, cockpit-pcp)
-- Service configuration and user group management
-
-**Critical**: No - Can be skipped if ContinueOnError is enabled
-**Estimated Time**: 5-10 minutes
-
-### 4. cockpit-extensions.yaml
-**Purpose**: Third-party extensions and hardware-specific configuration
-- 45Drives modules (file-sharing, navigator, sensors)
-- Hardware sensor detection for bare metal instances
-- Instance type-aware configuration
-- Extension verification
-
-**Critical**: No - Can be skipped if ContinueOnError is enabled
-**Estimated Time**: 3-7 minutes
-
-### 5. cockpit-user-config.yaml
-**Purpose**: User account and security configuration
-- Admin user creation with secure defaults
-- Rocky/ec2-user configuration
-- Sudo access configuration
-- User group membership management
-
-**Critical**: No - Can be skipped if ContinueOnError is enabled
-**Estimated Time**: 1-2 minutes
-
-### 6. cockpit-finalize.yaml
-**Purpose**: Final configuration and completion notification
-- Cockpit configuration files
-- Welcome message creation
-- Comprehensive status verification
-- Final success/failure notification with complete details
-
-**Critical**: No - Deployment completes even if this fails
-**Estimated Time**: 1-2 minutes
-
-### 7. cockpit-deploy-automation.yaml
-**Purpose**: Main orchestration document
-- Instance validation and state checking
-- Sequential component execution with error handling
-- Notification management throughout deployment
-- Failure recovery and continuation logic
-- Comprehensive progress reporting
-
-**Type**: Automation (not Command like the others)
-**Estimated Total Time**: 20-45 minutes
-
-## Deployment
-
-### Prerequisites
-1. AWS CLI installed and configured
-2. Appropriate IAM permissions for SSM document management
-3. SNS topic created for notifications (optional but recommended)
-
-### Deploy All Documents
-```bash
-./scripts/deploy-ssm-documents.sh
-```
-
-### Deploy with Options
-```bash
-# Deploy to specific region
-./scripts/deploy-ssm-documents.sh --region us-west-2
-
-# Deploy and cleanup old versions
-./scripts/deploy-ssm-documents.sh --cleanup
-
-# Deploy and test
-./scripts/deploy-ssm-documents.sh --test
-
-# Just list current documents
-./scripts/deploy-ssm-documents.sh --list
-```
+### ✅ **Maintainability**
+- 90% less complexity than previous modular approach
+- Easy to understand complete workflow in one file
+- Simple to modify and test changes
+- No JSON/YAML format conversion issues
 
 ## Usage
 
-### Full Automated Deployment
+### Quick Deployment
 ```bash
-aws ssm start-automation-execution \
-    --document-name "cockpit-deploy-automation" \
-    --parameters "InstanceId=i-1234567890abcdef0,NotificationTopic=arn:aws:sns:us-east-1:123456789012:cockpit-notifications"
+# Deploy the SSM document
+aws ssm create-document --name "cockpit-complete-install" --content file://ssm-documents/cockpit-complete-install.yaml --document-type "Command"
+
+# Launch instance with automated Cockpit installation
+./launch-cockpit-instance.sh
 ```
 
-### Individual Component Execution
+### Manual Execution
 ```bash
-# Run just system preparation
+# Execute complete installation
 aws ssm send-command \
-    --document-name "cockpit-system-prep" \
-    --instance-ids "i-1234567890abcdef0" \
-    --parameters "NotificationTopic=arn:aws:sns:us-east-1:123456789012:topic"
-
-# Run just core installation (after system prep)
-aws ssm send-command \
-    --document-name "cockpit-core-install" \
-    --instance-ids "i-1234567890abcdef0"
+  --document-name "cockpit-complete-install" \
+  --instance-ids $INSTANCE_ID \
+  --parameters "InstanceId=$INSTANCE_ID,NotificationTopic=$SNS_TOPIC_ARN"
 ```
 
-## Error Handling and Recovery
-
-### ContinueOnError Parameter
-The main orchestration document supports a `ContinueOnError` parameter (default: true):
-- `true`: Non-critical component failures won't stop deployment
-- `false`: Any component failure stops the entire deployment
-
-### Individual Component Retry
-If a component fails, you can retry just that component:
+### Monitor Progress
 ```bash
-aws ssm send-command \
-    --document-name "cockpit-services-setup" \
-    --instance-ids "i-1234567890abcdef0" \
-    --parameters "NotificationTopic=arn:aws:sns:us-east-1:123456789012:topic"
+# Use simplified monitoring script
+./scripts/monitor-command.sh $COMMAND_ID $INSTANCE_ID
 ```
 
-### Log Files
-Each component creates its own log file on the target instance:
-- `/var/log/cockpit-system-prep.log`
-- `/var/log/cockpit-core-install.log`
-- `/var/log/cockpit-services-setup.log`
-- `/var/log/cockpit-extensions.log`
-- `/var/log/cockpit-user-config.log`
-- `/var/log/cockpit-finalize.log`
+## Installation Components
 
-## Benefits of Modular Design
+The single document includes these logical sections:
 
-### Reliability
-- Individual component failures don't necessarily break entire deployment
-- Granular retry capabilities for failed components
-- Better error isolation and diagnosis
+1. **System Preparation** - System updates, AWS CLI, SSM agent, network readiness
+2. **Core Cockpit Installation** - Core Cockpit packages and services
+3. **Extended Services Setup** - Virtualization, containers, monitoring
+4. **Third-party Extensions** - 45Drives modules, file sharing
+5. **User Configuration** - User accounts, sudo access
+6. **Final Configuration** - Verification and completion
 
-### Reusability
-- Components can be used independently for maintenance
-- Easy to add new features as separate documents
-- Support for different deployment scenarios
+## Parameters
 
-### Maintainability
-- Smaller, focused documents are easier to understand and modify
-- Independent testing of individual components
-- Cleaner separation of concerns
+- `InstanceId` - Target EC2 instance ID  
+- `NotificationTopic` - SNS topic ARN for progress notifications
 
-### Monitoring
-- Individual component progress tracking
-- Detailed notifications for each phase
-- Better visibility into deployment status
+## Monitoring & Notifications
 
-## Integration with Launch Script
+- **Real-time progress**: SNS emails sent at each major component completion
+- **Component tracking**: Monitor script shows progress through each installation phase
+- **Single log file**: `/var/log/cockpit-complete-install.log` contains complete installation log
 
-The main `launch-cockpit-instance.sh` script has been updated to use the new orchestration:
+## Troubleshooting
 
+### Check Command Status
 ```bash
-# Old approach (deprecated)
-SSM_MAIN_DOCUMENT="${SSM_MAIN_DOCUMENT:-cockpit-base-install}"
-
-# New modular approach
-SSM_MAIN_DOCUMENT="${SSM_MAIN_DOCUMENT:-cockpit-deploy-automation}"
+aws ssm get-command-invocation --command-id $COMMAND_ID --instance-id $INSTANCE_ID
 ```
 
-This maintains backward compatibility while providing the benefits of the modular architecture.
+### View Installation Logs
+```bash
+ssh -i key.pem rocky@$IP sudo tail -f /var/log/cockpit-complete-install.log
+```
+
+### Retry Installation
+```bash
+aws ssm send-command --document-name "cockpit-complete-install" --instance-ids $INSTANCE_ID
+```
+
+## Legacy Architecture
+
+The previous complex modular architecture (7 separate documents with automation orchestration) has been moved to `legacy/` directory. The simplified approach provides the same functionality with dramatically reduced complexity.

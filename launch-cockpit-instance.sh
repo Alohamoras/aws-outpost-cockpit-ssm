@@ -18,8 +18,8 @@ KEY_NAME="${KEY_NAME:-ryanfill}"
 INSTANCE_TYPE="${INSTANCE_TYPE:-c6id.metal}"
 REGION="${REGION:-us-east-1}"
 
-# SSM Document name - Modular architecture using orchestration
-SSM_MAIN_DOCUMENT="${SSM_MAIN_DOCUMENT:-cockpit-deploy-automation}"
+# SSM Document name - Single document architecture
+SSM_MAIN_DOCUMENT="${SSM_MAIN_DOCUMENT:-cockpit-complete-install}"
 
 # SNS Topic ARN for notifications (required)
 SNS_TOPIC_ARN="${SNS_TOPIC_ARN}"
@@ -381,102 +381,75 @@ get_public_ip() {
     echo "Public IP: $PUBLIC_IP" >> .last-instance-id
 }
 
-# Execute SSM automation
-execute_ssm_automation() {
-    log "Starting SSM automation for Cockpit installation..."
+# Execute SSM command
+execute_ssm_command() {
+    log "Starting SSM command for Cockpit installation..."
     
-    # Build parameters based on what's available
-    local ssm_parameters="InstanceId=$INSTANCE_ID"
-    
-    # Add notification topic if provided
-    if [[ -n "$SNS_TOPIC_ARN" ]]; then
-        ssm_parameters="$ssm_parameters,NotificationTopic=$SNS_TOPIC_ARN"
-    fi
-    
-    # Add continue on error setting
-    ssm_parameters="$ssm_parameters,ContinueOnError=$CONTINUE_ON_ERROR"
-    
-    # Add automation assume role if provided
-    local assume_role_param=""
-    if [[ -n "$AUTOMATION_ASSUME_ROLE" ]]; then
-        assume_role_param="--cli-input-json {\"AutomationAssumeRole\":\"$AUTOMATION_ASSUME_ROLE\"}"
-        ssm_parameters="$ssm_parameters,AutomationAssumeRole=$AUTOMATION_ASSUME_ROLE"
-    fi
-    
-    log "SSM Parameters: $ssm_parameters"
-    
-    EXECUTION_ID=$(aws ssm start-automation-execution \
+    # Execute the complete installation document
+    COMMAND_ID=$(aws ssm send-command \
         --region "$REGION" \
         --document-name "$SSM_MAIN_DOCUMENT" \
-        --parameters "$ssm_parameters" \
-        $assume_role_param \
-        --query 'AutomationExecutionId' \
+        --instance-ids "$INSTANCE_ID" \
+        --parameters "InstanceId=$INSTANCE_ID,NotificationTopic=$SNS_TOPIC_ARN" \
+        --comment "Complete Cockpit installation via simplified SSM architecture" \
+        --query 'Command.CommandId' \
         --output text)
     
-    if [[ -z "$EXECUTION_ID" ]]; then
-        error "Failed to start SSM automation"
+    if [[ -z "$COMMAND_ID" ]]; then
+        error "Failed to start SSM command"
         exit 1
     fi
     
-    success "SSM automation started: $EXECUTION_ID"
-    echo "Execution ID: $EXECUTION_ID" >> .last-instance-id
+    success "SSM command started: $COMMAND_ID"
+    echo "Command ID: $COMMAND_ID" >> .last-instance-id
     
     return 0
 }
 
-# Monitor SSM automation execution
+# Monitor SSM command execution
 monitor_ssm_execution() {
-    log "Monitoring SSM automation execution..."
+    log "Monitoring SSM command execution..."
     
     local execution_complete=false
     local check_count=0
-    local max_checks=60  # 30 minutes max
+    local max_checks=120  # 60 minutes max for complete installation
     
     while [[ $execution_complete == false ]] && [[ $check_count -lt $max_checks ]]; do
         ((check_count++))
         
-        # Get execution status
-        local execution_status=$(aws ssm describe-automation-executions \
+        # Get command status
+        local command_status=$(aws ssm get-command-invocation \
             --region "$REGION" \
-            --filters "Key=ExecutionId,Values=$EXECUTION_ID" \
-            --query 'AutomationExecutions[0].AutomationExecutionStatus' \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$INSTANCE_ID" \
+            --query 'Status' \
             --output text 2>/dev/null || echo "Unknown")
         
-        case "$execution_status" in
+        case "$command_status" in
             "Success")
                 execution_complete=true
-                success "SSM automation completed successfully!"
+                success "SSM command completed successfully!"
                 ;;
             "Failed"|"Cancelled"|"TimedOut")
                 execution_complete=true
-                error "SSM automation failed with status: $execution_status"
+                error "SSM command failed with status: $command_status"
                 
                 # Get failure details
-                local failure_message=$(aws ssm describe-automation-executions \
+                local failure_message=$(aws ssm get-command-invocation \
                     --region "$REGION" \
-                    --filters "Key=ExecutionId,Values=$EXECUTION_ID" \
-                    --query 'AutomationExecutions[0].FailureMessage' \
-                    --output text 2>/dev/null || echo "No failure message available")
+                    --command-id "$COMMAND_ID" \
+                    --instance-id "$INSTANCE_ID" \
+                    --query 'StandardErrorContent' \
+                    --output text 2>/dev/null || echo "No error details available")
                 
                 error "Failure details: $failure_message"
                 return 1
                 ;;
-            "InProgress"|"Pending"|"Waiting")
-                # Get current step information
-                local current_step=$(aws ssm describe-automation-step-executions \
-                    --region "$REGION" \
-                    --automation-execution-id "$EXECUTION_ID" \
-                    --query 'StepExecutions[?StepStatus==`InProgress`].StepName' \
-                    --output text 2>/dev/null | head -1)
-                
-                if [[ -n "$current_step" && "$current_step" != "None" ]]; then
-                    log "Progress: Executing step '$current_step' (check $check_count/$max_checks)"
-                else
-                    log "SSM automation in progress... (check $check_count/$max_checks)"
-                fi
+            "InProgress"|"Pending")
+                log "SSM command in progress... (check $check_count/$max_checks)"
                 ;;
             *)
-                log "SSM automation status: $execution_status (check $check_count/$max_checks)"
+                log "SSM command status: $command_status (check $check_count/$max_checks)"
                 ;;
         esac
         
@@ -486,8 +459,8 @@ monitor_ssm_execution() {
     done
     
     if [[ $execution_complete == false ]]; then
-        warning "SSM automation monitoring timed out after 30 minutes"
-        log "Check execution status with: aws ssm describe-automation-executions --region $REGION --filters Key=ExecutionId,Values=$EXECUTION_ID"
+        warning "SSM command monitoring timed out after 60 minutes"
+        log "Check command status with: aws ssm get-command-invocation --region $REGION --command-id $COMMAND_ID --instance-id $INSTANCE_ID"
         return 1
     fi
     
@@ -547,7 +520,7 @@ open_cockpit() {
     echo "Public IP:      $PUBLIC_IP"
     echo "Cockpit URL:    $cockpit_url"
     echo "SSH Access:     ssh -i ryanfill.pem rocky@$PUBLIC_IP"
-    echo "SSM Execution:  $EXECUTION_ID"
+    echo "SSM Command:    $COMMAND_ID"
     echo ""
     echo "Opening Cockpit in your browser..."
     echo "═══════════════════════════════════════════════════"
@@ -570,9 +543,9 @@ cleanup() {
         echo "Instance ID: $INSTANCE_ID"
         echo "To terminate: aws ec2 terminate-instances --region $REGION --instance-ids $INSTANCE_ID"
     fi
-    if [[ -n "$EXECUTION_ID" ]]; then
-        echo "SSM Execution: $EXECUTION_ID"
-        echo "To stop: aws ssm stop-automation-execution --region $REGION --automation-execution-id $EXECUTION_ID"
+    if [[ -n "$COMMAND_ID" ]]; then
+        echo "SSM Command: $COMMAND_ID"
+        echo "To cancel: aws ssm cancel-command --region $REGION --command-id $COMMAND_ID"
     fi
     exit 1
 }
@@ -625,10 +598,10 @@ main() {
     echo "═══════════════════════════════════════════════════"
     
     # Execute SSM automation
-    if execute_ssm_automation; then
+    if execute_ssm_command; then
         echo ""
-        echo "📋 SSM Automation started successfully!"
-        echo "   Execution ID: $EXECUTION_ID"
+        echo "📋 SSM Command started successfully!"
+        echo "   Command ID: $COMMAND_ID"
         echo ""
         
         # Ask user if they want to monitor execution progress
@@ -659,7 +632,7 @@ main() {
                 echo "   aws ssm start-automation-execution --document-name cockpit-deploy-automation --parameters \"InstanceId=$INSTANCE_ID,NotificationTopic=$SNS_TOPIC_ARN\""
                 echo ""
                 echo "📊 Check execution status:"
-                echo "   aws ssm describe-automation-executions --region $REGION --filters Key=ExecutionId,Values=$EXECUTION_ID"
+                echo "   aws ssm get-command-invocation --region $REGION --command-id $COMMAND_ID --instance-id $INSTANCE_ID"
             fi
         else
             echo "SSM automation is running in the background."
@@ -667,7 +640,7 @@ main() {
             echo "Cockpit URL: https://$PUBLIC_IP:9090"
             echo ""
             echo "📊 Monitor execution:"
-            echo "   aws ssm describe-automation-executions --region $REGION --filters Key=ExecutionId,Values=$EXECUTION_ID"
+            echo "   aws ssm get-command-invocation --region $REGION --command-id $COMMAND_ID --instance-id $INSTANCE_ID"
         fi
     else
         error "Failed to start SSM automation"
