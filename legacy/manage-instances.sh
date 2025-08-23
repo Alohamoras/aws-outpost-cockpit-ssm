@@ -5,8 +5,15 @@
 
 set -e
 
-REGION="us-east-1"
+# Load environment variables from .env file if it exists
+if [[ -f ../.env ]]; then
+    source ../.env
+fi
+
+REGION="${REGION:-us-east-1}"
 INSTANCE_FILE=".last-instance-id"
+KEY_NAME="${KEY_NAME:-ryanfill}"
+KEY_FILE="${KEY_NAME}.pem"
 
 # Colors for output
 RED='\033[0;31m'
@@ -80,7 +87,7 @@ show_status() {
         
         if [[ -n "$PUBLIC_IP" ]]; then
             echo "Cockpit URL: https://$PUBLIC_IP:9090"
-            echo "SSH Command: ssh -i ryanfill.pem ec2-user@$PUBLIC_IP"
+            echo "SSH Command: ssh -i $KEY_FILE rocky@$PUBLIC_IP"
         fi
     else
         warning "Instance is not running (state: $state)"
@@ -106,7 +113,7 @@ ssh_connect() {
     fi
     
     log "Connecting to $PUBLIC_IP..."
-    ssh -i ryanfill.pem rocky@"$PUBLIC_IP"
+    ssh -i "$KEY_FILE" rocky@"$PUBLIC_IP"
 }
 
 # Monitor installation logs
@@ -131,7 +138,7 @@ monitor_logs() {
     log "Press Ctrl+C to stop monitoring"
     echo ""
     
-    ssh -i ryanfill.pem rocky@"$PUBLIC_IP" "sudo tail -f /var/log/user-data.log"
+    ssh -i "$KEY_FILE" rocky@"$PUBLIC_IP" "sudo tail -f /var/log/user-data-bootstrap.log"
 }
 
 # Open Cockpit in browser
@@ -225,7 +232,7 @@ check_cockpit_status() {
     echo "═══════════════════════════════════════════════════"
     
     for service in "${services[@]}"; do
-        status=$(ssh -i ryanfill.pem -o StrictHostKeyChecking=no ec2-user@"$PUBLIC_IP" "systemctl is-active $service 2>/dev/null || echo 'inactive'")
+        status=$(ssh -i "$KEY_FILE" -o StrictHostKeyChecking=no rocky@"$PUBLIC_IP" "systemctl is-active $service 2>/dev/null || echo 'inactive'")
         if [[ "$status" == "active" ]]; then
             echo -e "✅ $service: ${GREEN}$status${NC}"
         else
@@ -237,7 +244,7 @@ check_cockpit_status() {
     
     # Check if Cockpit web interface is responding
     log "Testing Cockpit web interface connectivity..."
-    if ssh -i ryanfill.pem -o StrictHostKeyChecking=no ec2-user@"$PUBLIC_IP" "curl -k -s --max-time 5 https://localhost:9090 >/dev/null 2>&1"; then
+    if ssh -i "$KEY_FILE" -o StrictHostKeyChecking=no rocky@"$PUBLIC_IP" "curl -k -s --max-time 5 https://localhost:9090 >/dev/null 2>&1"; then
         success "Cockpit web interface is responding"
         echo "🌐 Cockpit URL: https://$PUBLIC_IP:9090"
     else

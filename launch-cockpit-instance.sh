@@ -18,7 +18,7 @@ KEY_NAME="${KEY_NAME:-ryanfill}"
 INSTANCE_TYPE="${INSTANCE_TYPE:-c6id.metal}"
 REGION="${REGION:-us-east-1}"
 
-# No SSM documents needed - everything in user-data
+
 # SSM_MAIN_DOCUMENT removed - not needed
 
 # SNS Topic ARN for notifications (required)
@@ -75,13 +75,15 @@ check_prerequisites() {
     fi
     
     # Check key file exists
-    if [[ ! -f "ryanfill.pem" ]]; then
-        error "Key file not found: ryanfill.pem"
+    KEY_FILE="${KEY_NAME}.pem"
+    if [[ ! -f "$KEY_FILE" ]]; then
+        error "Key file not found: $KEY_FILE"
+        error "Expected key file name based on KEY_NAME environment variable: $KEY_NAME"
         exit 1
     fi
     
     # Set proper permissions on key file
-    chmod 400 ryanfill.pem
+    chmod 400 "$KEY_FILE"
     
     success "Prerequisites check passed"
     success "SNS notifications will be sent to: $SNS_TOPIC_ARN"
@@ -279,7 +281,7 @@ wait_for_bootstrap_ready() {
     local max_ssh_attempts=60  # 30 minutes at 30-second intervals
     
     while [[ $ssh_ready == false ]] && [[ $ssh_attempts -lt $max_ssh_attempts ]]; do
-        if ssh -i ryanfill.pem -o ConnectTimeout=5 -o StrictHostKeyChecking=no rocky@"$PUBLIC_IP" "echo 'SSH ready'" >/dev/null 2>&1; then
+        if ssh -i "$KEY_FILE" -o ConnectTimeout=5 -o StrictHostKeyChecking=no rocky@"$PUBLIC_IP" "echo 'SSH ready'" >/dev/null 2>&1; then
             ssh_ready=true
             success "✅ Phase 3 complete: SSH connectivity established"
         else
@@ -319,7 +321,7 @@ wait_for_bootstrap_ready() {
         error "This may indicate network issues or Outpost connectivity problems"
         echo ""
         echo "Manual troubleshooting steps:"
-        echo "1. Check SSH access: ssh -i ryanfill.pem rocky@$PUBLIC_IP"
+        echo "1. Check SSH access: ssh -i $KEY_FILE rocky@$PUBLIC_IP"
         echo "2. Check SSM agent: sudo systemctl status amazon-ssm-agent"
         echo "3. Check bootstrap logs: sudo tail -f /var/log/user-data-bootstrap.log"
         exit 1
@@ -386,7 +388,7 @@ wait_for_bootstrap_completion() {
         ((check_count++))
         
         # Check if bootstrap completion marker exists via SSH
-        if ssh -i ryanfill.pem -o ConnectTimeout=10 -o StrictHostKeyChecking=no rocky@"$PUBLIC_IP" "test -f /tmp/bootstrap-complete" >/dev/null 2>&1; then
+        if ssh -i "$KEY_FILE" -o ConnectTimeout=10 -o StrictHostKeyChecking=no rocky@"$PUBLIC_IP" "test -f /tmp/bootstrap-complete" >/dev/null 2>&1; then
             bootstrap_complete=true
             success "Bootstrap and Cockpit installation completed successfully!"
         else
@@ -397,7 +399,7 @@ wait_for_bootstrap_completion() {
     
     if [[ $bootstrap_complete == false ]]; then
         warning "Bootstrap completion check timed out after 60 minutes"
-        log "Check bootstrap status manually: ssh -i ryanfill.pem rocky@$PUBLIC_IP 'sudo tail -f /var/log/user-data-bootstrap.log'"
+        log "Check bootstrap status manually: ssh -i $KEY_FILE rocky@$PUBLIC_IP 'sudo tail -f /var/log/user-data-bootstrap.log'"
         return 1
     fi
     
@@ -413,7 +415,7 @@ verify_cockpit_installation() {
     log "Verifying Cockpit installation..."
     
     # Check if Cockpit is running via SSH
-    local cockpit_status=$(ssh -i ryanfill.pem -o ConnectTimeout=10 -o StrictHostKeyChecking=no rocky@"$PUBLIC_IP" "systemctl is-active cockpit.socket" 2>/dev/null || echo "inactive")
+    local cockpit_status=$(ssh -i "$KEY_FILE" -o ConnectTimeout=10 -o StrictHostKeyChecking=no rocky@"$PUBLIC_IP" "systemctl is-active cockpit.socket" 2>/dev/null || echo "inactive")
     
     if [[ "$cockpit_status" == "active" ]]; then
         success "Cockpit service is active"
@@ -444,7 +446,7 @@ open_cockpit() {
     echo "Instance ID:    $INSTANCE_ID"
     echo "Public IP:      $PUBLIC_IP"
     echo "Cockpit URL:    $cockpit_url"
-    echo "SSH Access:     ssh -i ryanfill.pem rocky@$PUBLIC_IP"
+    echo "SSH Access:     ssh -i $KEY_FILE rocky@$PUBLIC_IP"
     echo "Login:          admin/rocky (password: Cockpit123)"
     echo ""
     echo "Opening Cockpit in your browser..."
@@ -467,7 +469,7 @@ cleanup() {
     if [[ -n "$INSTANCE_ID" ]]; then
         echo "Instance ID: $INSTANCE_ID"
         echo "To terminate: aws ec2 terminate-instances --region $REGION --instance-ids $INSTANCE_ID"
-        echo "Check bootstrap: ssh -i ryanfill.pem rocky@$PUBLIC_IP 'sudo tail -f /var/log/user-data-bootstrap.log'"
+        echo "Check bootstrap: ssh -i $KEY_FILE rocky@$PUBLIC_IP 'sudo tail -f /var/log/user-data-bootstrap.log'"
     fi
     exit 1
 }
@@ -502,7 +504,7 @@ main() {
     echo "═══════════════════════════════════════════════════"
     echo "Instance ID: $INSTANCE_ID"
     echo "Public IP:   $PUBLIC_IP"
-    echo "SSH Access:  ssh -i ryanfill.pem rocky@$PUBLIC_IP"
+    echo "SSH Access:  ssh -i $KEY_FILE rocky@$PUBLIC_IP"
     echo ""
     echo "📧 You will receive email notifications for:"
     echo "   • Bootstrap start and network readiness"
@@ -531,14 +533,14 @@ main() {
             warning "Installation completed but verification failed"
             echo "Cockpit URL: https://$PUBLIC_IP:9090"
             echo "Manual verification: curl -k https://$PUBLIC_IP:9090/"
-            echo "Check logs: ssh -i ryanfill.pem rocky@$PUBLIC_IP 'sudo tail -f /var/log/user-data-bootstrap.log'"
+            echo "Check logs: ssh -i $KEY_FILE rocky@$PUBLIC_IP 'sudo tail -f /var/log/user-data-bootstrap.log'"
         fi
     else
         warning "Bootstrap completion check failed or timed out"
         echo ""
         echo "🔧 Manual troubleshooting:"
-        echo "   Check logs:     ssh -i ryanfill.pem rocky@$PUBLIC_IP 'sudo tail -f /var/log/user-data-bootstrap.log'"
-        echo "   Check status:   ssh -i ryanfill.pem rocky@$PUBLIC_IP 'systemctl status cockpit.socket'"
+        echo "   Check logs:     ssh -i $KEY_FILE rocky@$PUBLIC_IP 'sudo tail -f /var/log/user-data-bootstrap.log'"
+        echo "   Check status:   ssh -i $KEY_FILE rocky@$PUBLIC_IP 'systemctl status cockpit.socket'"
         echo "   Test Cockpit:   curl -k https://$PUBLIC_IP:9090/"
         echo ""
         echo "📊 Bootstrap may still be running - check manually:"

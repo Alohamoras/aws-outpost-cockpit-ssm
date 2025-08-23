@@ -23,8 +23,8 @@ cp .env.example .env
 
 ### 2. Launch Cockpit Instance
 ```bash
-# Add your SSH key to the directory
-cp /path/to/your-key.pem ryanfill.pem
+# Add your SSH key to the directory (name it based on your KEY_NAME in .env)
+cp /path/to/your-key.pem ${KEY_NAME}.pem
 
 # Launch instance with complete self-contained Cockpit installation
 ./launch-cockpit-instance.sh
@@ -166,7 +166,7 @@ Ensure your security group allows:
 ./launch-cockpit-instance.sh
 
 # Monitor bootstrap progress (SSH into instance)
-ssh -i ryanfill.pem rocky@<instance-ip> 'sudo tail -f /var/log/user-data-bootstrap.log'
+ssh -i ${KEY_NAME}.pem rocky@<instance-ip> 'sudo tail -f /var/log/user-data-bootstrap.log'
 
 # Verify services after completion
 ./legacy/manage-instances.sh services

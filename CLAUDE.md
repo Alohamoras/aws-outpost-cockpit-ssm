@@ -35,7 +35,8 @@ The system uses a streamlined self-contained architecture:
    - `REGION` - AWS region (default: us-east-1)
 
 ### SSH Key
-- The project expects `ryanfill.pem` SSH private key in the root directory
+- The project expects `${KEY_NAME}.pem` SSH private key in the root directory (defaults to `ryanfill.pem`)
+- Key name is configurable via the `KEY_NAME` environment variable in `.env`
 - Key permissions are automatically set to 400 during execution
 
 ## Common Commands
@@ -49,7 +50,7 @@ The launcher will:
 - Find latest Rocky Linux 9 AMI
 - Create IAM roles if needed
 - Launch instance with complete Cockpit installation via user-data
-- Wait for bootstrap completion and verify installation
+- Monitor bootstrap progress via console logs (no SSH required)
 - Provide access URLs and login credentials
 
 ### Instance Management
@@ -74,19 +75,17 @@ The launcher will:
 ```
 
 ### Bootstrap Troubleshooting
-If installation fails, check bootstrap logs and status:
+The launcher now monitors bootstrap progress via console logs automatically. For manual troubleshooting:
 ```bash
-# Check bootstrap logs
-ssh -i ryanfill.pem rocky@$PUBLIC_IP 'sudo tail -f /var/log/user-data-bootstrap.log'
+# Monitor console logs (primary method - no SSH required)
+aws ec2 get-console-output --region $REGION --instance-id $INSTANCE_ID
 
-# Check Cockpit service status
-ssh -i ryanfill.pem rocky@$PUBLIC_IP 'systemctl status cockpit.socket'
-
-# Test Cockpit web interface
+# Test Cockpit web interface accessibility
 curl -k https://$PUBLIC_IP:9090/
 
-# Check bootstrap completion marker
-ssh -i ryanfill.pem rocky@$PUBLIC_IP 'test -f /tmp/bootstrap-complete && echo "Bootstrap completed" || echo "Bootstrap in progress"'
+# Optional: SSH-based troubleshooting (if SSH access is available)
+ssh -i ${KEY_NAME}.pem rocky@$PUBLIC_IP 'sudo tail -f /var/log/user-data-bootstrap.log'
+ssh -i ${KEY_NAME}.pem rocky@$PUBLIC_IP 'systemctl status cockpit.socket'
 ```
 
 ## File Structure
@@ -97,7 +96,7 @@ ssh -i ryanfill.pem rocky@$PUBLIC_IP 'test -f /tmp/bootstrap-complete && echo "B
 ├── user-data-bootstrap.sh        # Complete Cockpit installation bootstrap
 ├── .env.example                  # Environment template
 ├── .env                         # Local configuration (gitignored)
-├── ryanfill.pem                 # SSH private key
+├── ${KEY_NAME}.pem              # SSH private key (configurable via KEY_NAME)
 ├── .last-instance-id            # Tracks most recent instance
 └── legacy/                      # Legacy scripts directory
     ├── README.md                # Legacy documentation
@@ -125,3 +124,33 @@ ssh -i ryanfill.pem rocky@$PUBLIC_IP 'test -f /tmp/bootstrap-complete && echo "B
 - Comprehensive logging with color-coded output
 - SNS notifications for bootstrap and installation progress
 - Robust retry mechanisms for network operations and package installations
+
+### Bootstrap Architecture Details
+- **Network Readiness**: Extensive network validation before any package operations (max 40 attempts, 60s intervals)
+- **Outpost Optimization**: Built-in delays and timeouts optimized for AWS Outpost latency  
+- **DNF Retries**: Automatic retry logic for package manager operations (3 attempts with 30s delays)
+- **SSM Registration**: 180-second wait for SSM agent registration with AWS Systems Manager
+- **Component Installation Order**: System updates → SSM agent → Complete Cockpit installation
+- **Console Log Monitoring**: Real-time progress monitoring via `aws ec2 get-console-output` (no SSH required)
+- **Status Markers**: Creates `/tmp/bootstrap-complete` marker file for external monitoring
+
+### Cockpit Components Installed
+- **Core**: cockpit, cockpit-system, cockpit-ws, cockpit-bridge
+- **Network & Storage**: cockpit-networkmanager, cockpit-storaged
+- **Package Management**: cockpit-packagekit, cockpit-sosreport
+- **Virtualization**: cockpit-machines, qemu-kvm, libvirt, virt-install
+- **Containers**: cockpit-podman, podman, buildah, skopeo
+- **Monitoring**: cockpit-pcp, pcp, pcp-system-tools
+- **Third-party Extensions**: cockpit-file-sharing, cockpit-navigator, cockpit-identities, cockpit-sensors (from 45Drives repo)
+
+### Testing and Validation
+- **Primary Monitoring**: Console log output parsed for completion markers ("COMPLETE COCKPIT DEPLOYMENT SUCCESS")
+- **Error Detection**: Console logs monitored for failure patterns ("Bootstrap.*failed", "ERROR.*failed")
+- **Web Interface Test**: Optional curl test to port 9090 (non-blocking)
+- **Network Readiness**: Validated against multiple endpoints (Rocky repo, AWS S3)
+- **Progress Visibility**: Real-time console output display during bootstrap
+
+### Legacy Migration Notes
+- Project migrated from SSM-based modular deployment to self-contained user-data
+- All SSM documents removed - functionality consolidated into `user-data-bootstrap.sh`
+- Legacy utilities preserved in `legacy/` directory for reference and management operations
