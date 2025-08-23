@@ -136,9 +136,10 @@ echo ""
 echo "=== PHASE 3: AWS SSM AGENT INSTALLATION ==="
 echo "$(date): Installing AWS SSM Agent..."
 
-# Install SSM Agent (now safe since network is ready)
-echo "Installing AWS SSM Agent..."
-if ! retry_dnf install -y amazon-ssm-agent; then
+# Install SSM Agent from Amazon's direct URL (now safe since network is ready)
+echo "Installing AWS SSM Agent from Amazon's repository..."
+SSM_URL="https://s3.amazonaws.com/ec2-downloads-windows/SSMAgent/latest/linux_amd64/amazon-ssm-agent.rpm"
+if ! retry_dnf install -y "$SSM_URL"; then
     echo "❌ SSM Agent installation failed"
     send_bootstrap_notification "FAILED" "SSM Agent installation failed on instance $INSTANCE_ID during bootstrap"
     exit 1
