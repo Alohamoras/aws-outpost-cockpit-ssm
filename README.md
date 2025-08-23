@@ -1,6 +1,6 @@
 # AWS Outpost Cockpit SSM
 
-Automated deployment of [Cockpit](https://cockpit-project.org/) web console on AWS Outpost instances using modular AWS Systems Manager (SSM) documents. This project replaces monolithic user-data scripts with a reliable, modular, and maintainable SSM-based architecture.
+Automated deployment of [Cockpit](https://cockpit-project.org/) web console on AWS Outpost instances using a self-contained user-data bootstrap approach. This project provides a streamlined, single-script deployment with complete Cockpit installation during instance launch.
 
 ## 🚀 Quick Start
 
@@ -21,22 +21,16 @@ cp .env.example .env
 # Edit .env with your AWS configuration
 ```
 
-### 2. Deploy SSM Documents
-```bash
-# Deploy all modular SSM documents
-./scripts/deploy-ssm-documents.sh
-```
-
-### 3. Launch Cockpit Instance
+### 2. Launch Cockpit Instance
 ```bash
 # Add your SSH key to the directory
 cp /path/to/your-key.pem ryanfill.pem
 
-# Launch instance with automated Cockpit installation
+# Launch instance with complete self-contained Cockpit installation
 ./launch-cockpit-instance.sh
 ```
 
-### 4. Access Cockpit
+### 3. Access Cockpit
 After deployment completes (20-45 minutes), access Cockpit at:
 - **URL**: `https://YOUR_INSTANCE_IP:9090`
 - **Username**: `admin` or `rocky`
@@ -162,33 +156,19 @@ Ensure your security group allows:
 ## 📚 Documentation
 
 - **[CLAUDE.md](CLAUDE.md)** - Comprehensive development guide
-- **[ssm-documents/README.md](ssm-documents/README.md)** - SSM document details
-- **[ssm-documents/ORCHESTRATION-FLOW.md](ssm-documents/ORCHESTRATION-FLOW.md)** - Component flow diagram
 - **[legacy/README.md](legacy/README.md)** - Migration information
 
 ## 🧪 Testing
 
-### Deployment Testing
-```bash
-# Test SSM document deployment
-./scripts/deploy-ssm-documents.sh --test
-
-# Verify document structure
-./scripts/deploy-ssm-documents.sh --list
-
-# Deploy with cleanup
-./scripts/deploy-ssm-documents.sh --cleanup
-```
-
 ### Instance Testing
 ```bash
-# Launch test instance
+# Launch instance with complete installation
 ./launch-cockpit-instance.sh
 
-# Monitor progress
-./legacy/manage-instances.sh logs
+# Monitor bootstrap progress (SSH into instance)
+ssh -i ryanfill.pem rocky@<instance-ip> 'sudo tail -f /var/log/user-data-bootstrap.log'
 
-# Verify services
+# Verify services after completion
 ./legacy/manage-instances.sh services
 ```
 
@@ -211,10 +191,10 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - [45Drives](https://github.com/45Drives) - Third-party Cockpit modules
 - [AWS Systems Manager](https://aws.amazon.com/systems-manager/) - Automation platform
 
-## 🔧 Migration from Legacy
+## 🔧 Architecture Evolution
 
-This project replaces a 427-line monolithic user-data script with modular SSM documents. Legacy components have been preserved in the `legacy/` directory for reference. See [legacy/README.md](legacy/README.md) for migration details.
+This project has evolved from SSM-based modular deployment to a streamlined self-contained user-data approach. The current implementation provides complete Cockpit installation during instance bootstrap with no external dependencies. Legacy SSM components and utilities have been preserved in the `legacy/` directory for reference.
 
 ---
 
-**Need Help?** Check the [troubleshooting guide](ssm-documents/README.md#error-handling-and-recovery) or open an issue.
+**Need Help?** Check the [CLAUDE.md documentation](CLAUDE.md) or open an issue.

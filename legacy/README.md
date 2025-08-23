@@ -1,6 +1,6 @@
 # Legacy Scripts
 
-This directory contains scripts from the original monolithic architecture that were used before the SSM architecture overhaul.
+This directory contains scripts from the original monolithic architecture that were used before the self-contained user-data architecture.
 
 ## Remaining Files
 
@@ -9,21 +9,21 @@ This directory contains scripts from the original monolithic architecture that w
 
 ## Removed Files (Successfully Migrated)
 
-The following files have been successfully migrated to the new modular SSM architecture and removed:
+The following files have been successfully migrated to the self-contained user-data architecture and removed:
 - ~~`configure-storage.sh`~~ - Unused storage configuration script
 - ~~`launch-cockpit-instance.sh`~~ - Original monolithic launch script (replaced by main launch script)
-- ~~`user-data.sh`~~ - Original 427-line user-data script (replaced by modular SSM documents)
+- ~~`user-data.sh`~~ - Original 427-line user-data script (replaced by complete bootstrap script)
 
 ## Current Status
 
 - **`manage-instances.sh`**: Still actively used for instance operations (status, SSH, logs, etc.)
-- **Monolithic scripts**: Successfully replaced by modular SSM document architecture
-- **Migration**: Complete - all functionality preserved in new modular approach
+- **Monolithic scripts**: Successfully replaced by self-contained user-data architecture
+- **Migration**: Complete - all functionality preserved in streamlined bootstrap approach
 
-## New Architecture
+## Current Architecture
 
 The original monolithic approach has been replaced with:
 - Main launcher: `launch-cockpit-instance.sh`
-- Modular SSM documents in `ssm-documents/` directory
-- Orchestration: `cockpit-deploy-automation.yaml`
-- Individual components: System prep, core install, services, extensions, user config, finalization
+- Complete bootstrap: `user-data-bootstrap.sh` - All installation during instance launch
+- No external dependencies: Everything self-contained in user-data script
+- Components: Network readiness, system updates, SSM agent, complete Cockpit installation
