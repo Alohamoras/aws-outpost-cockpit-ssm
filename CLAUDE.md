@@ -4,24 +4,23 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This project automates the deployment of Cockpit web console on AWS Outpost instances using AWS SSM (Systems Manager) automation. It provides infrastructure-as-code for launching EC2 instances and configuring them with Cockpit for server management.
+This project automates the deployment of Cockpit web console on AWS Outpost instances using a self-contained user-data approach. It provides infrastructure-as-code for launching EC2 instances with complete Cockpit installation during bootstrap.
 
 ## Architecture
 
-The system uses a modern SSM-based architecture that replaced the original monolithic user-data scripts:
+The system uses a streamlined self-contained architecture:
 
-### Current SSM Architecture
+### Current Self-Contained Architecture
 - **Main launcher**: `launch-cockpit-instance.sh` - Orchestrates the entire deployment
-- **SSM automation**: Uses AWS SSM documents for reliable, monitored installation
-- **Bootstrap script**: `user-data-bootstrap.sh` - Minimal instance initialization
+- **Complete bootstrap**: `user-data-bootstrap.sh` - Full Cockpit installation during instance launch
 - **Instance management**: `legacy/manage-instances.sh` - Operations utilities
 
 ### Key Components
 - EC2 instance launch with Rocky Linux 9
-- IAM role and instance profile management for SSM
+- IAM role and instance profile management for basic functionality
 - SNS notifications for installation progress
 - Elastic IP assignment and network configuration
-- Cockpit installation via SSM automation documents
+- Complete Cockpit installation via user-data script (no external dependencies)
 
 ## Environment Configuration
 
@@ -34,9 +33,6 @@ The system uses a modern SSM-based architecture that replaced the original monol
    - `KEY_NAME` - EC2 key pair name
    - `SNS_TOPIC_ARN` - SNS topic for notifications (required)
    - `REGION` - AWS region (default: us-east-1)
-   - `SSM_MAIN_DOCUMENT` - Main orchestration document (default: cockpit-deploy-automation)
-   - `CONTINUE_ON_ERROR` - Continue deployment if non-critical components fail (default: true)
-   - `AUTOMATION_ASSUME_ROLE` - IAM role for automation execution (optional)
 
 ### SSH Key
 - The project expects `ryanfill.pem` SSH private key in the root directory
@@ -52,9 +48,9 @@ The launcher will:
 - Verify prerequisites (AWS CLI, SNS topic, SSH key)
 - Find latest Rocky Linux 9 AMI
 - Create IAM roles if needed
-- Launch instance with minimal bootstrap
-- Execute SSM automation for Cockpit installation
-- Provide monitoring options and final URLs
+- Launch instance with complete Cockpit installation via user-data
+- Wait for bootstrap completion and verify installation
+- Provide access URLs and login credentials
 
 ### Instance Management
 ```bash
@@ -77,57 +73,55 @@ The launcher will:
 ./legacy/manage-instances.sh terminate
 ```
 
-### Component Retry
-If SSM automation fails, retry specific components individually:
+### Bootstrap Troubleshooting
+If installation fails, check bootstrap logs and status:
 ```bash
-# Individual component retry
-aws ssm send-command --document-name cockpit-system-prep --instance-ids $INSTANCE_ID
-aws ssm send-command --document-name cockpit-core-install --instance-ids $INSTANCE_ID
-aws ssm send-command --document-name cockpit-services-setup --instance-ids $INSTANCE_ID
-aws ssm send-command --document-name cockpit-extensions --instance-ids $INSTANCE_ID
-aws ssm send-command --document-name cockpit-user-config --instance-ids $INSTANCE_ID
-aws ssm send-command --document-name cockpit-finalize --instance-ids $INSTANCE_ID
+# Check bootstrap logs
+ssh -i ryanfill.pem rocky@$PUBLIC_IP 'sudo tail -f /var/log/user-data-bootstrap.log'
 
-# Or restart full automation
-aws ssm start-automation-execution --document-name cockpit-deploy-automation \
-  --parameters "InstanceId=$INSTANCE_ID,NotificationTopic=$SNS_TOPIC_ARN"
+# Check Cockpit service status
+ssh -i ryanfill.pem rocky@$PUBLIC_IP 'systemctl status cockpit.socket'
+
+# Test Cockpit web interface
+curl -k https://$PUBLIC_IP:9090/
+
+# Check bootstrap completion marker
+ssh -i ryanfill.pem rocky@$PUBLIC_IP 'test -f /tmp/bootstrap-complete && echo "Bootstrap completed" || echo "Bootstrap in progress"'
 ```
-
-## SSM Documents
-
-The system depends on these SSM automation documents (must be deployed separately):
-- `cockpit-base-install` - Main installation automation
-- `cockpit-deploy-automation` - Alternative deployment document
-- `cockpit-finalize` - Final configuration steps
 
 ## File Structure
 
 ```
 .
-├── launch-cockpit-instance.sh    # Main launcher (SSM architecture)
-├── user-data-bootstrap.sh        # Minimal instance bootstrap
+├── launch-cockpit-instance.sh    # Main launcher (self-contained)
+├── user-data-bootstrap.sh        # Complete Cockpit installation bootstrap
 ├── .env.example                  # Environment template
 ├── .env                         # Local configuration (gitignored)
 ├── ryanfill.pem                 # SSH private key
 ├── .last-instance-id            # Tracks most recent instance
 └── legacy/                      # Legacy scripts directory
     ├── README.md                # Legacy documentation
-    └── manage-instances.sh      # Instance operations utility (still used)
+    └── manage-instances.sh      # Instance operations utility
 ```
 
 ## Development Notes
 
 ### Instance State Tracking
 - Instance details are stored in `.last-instance-id` after launch
-- Contains instance ID, public IP, and execution ID for management operations
+- Contains instance ID, public IP, and bootstrap status for management operations
 
 ### Networking
 - Instances require public IP access for Cockpit web interface
 - Script automatically assigns available Elastic IP if needed
 - Cockpit accessible on port 9090 (HTTPS)
 
+### User Accounts
+- Default users: `admin` and `rocky` (both with password: `Cockpit123`)
+- Both users have sudo access via wheel group membership
+- Users configured for Cockpit access with virtualization and container permissions
+
 ### Error Handling
 - All scripts use `set -e` for fail-fast behavior
 - Comprehensive logging with color-coded output
-- SNS notifications for installation progress and failures
-- Retry mechanisms for failed automation components
+- SNS notifications for bootstrap and installation progress
+- Robust retry mechanisms for network operations and package installations

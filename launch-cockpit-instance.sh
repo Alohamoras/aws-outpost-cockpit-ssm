@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# AWS Outpost Cockpit Instance Launch Script - SSM Architecture
-# Launches EC2 instance and triggers SSM automation for Cockpit installation
+# AWS Outpost Cockpit Instance Launch Script - Self-Contained User-Data
+# Launches EC2 instance with complete Cockpit installation via user-data
 
 set -e
 
@@ -18,15 +18,14 @@ KEY_NAME="${KEY_NAME:-ryanfill}"
 INSTANCE_TYPE="${INSTANCE_TYPE:-c6id.metal}"
 REGION="${REGION:-us-east-1}"
 
-# SSM Document name - Single document architecture
-SSM_MAIN_DOCUMENT="${SSM_MAIN_DOCUMENT:-cockpit-complete-install}"
+# No SSM documents needed - everything in user-data
+# SSM_MAIN_DOCUMENT removed - not needed
 
 # SNS Topic ARN for notifications (required)
 SNS_TOPIC_ARN="${SNS_TOPIC_ARN}"
 
-# Deployment options (can be overridden by .env file)
-CONTINUE_ON_ERROR="${CONTINUE_ON_ERROR:-true}"
-AUTOMATION_ASSUME_ROLE="${AUTOMATION_ASSUME_ROLE:-}"
+# These variables are no longer needed for self-contained user-data approach
+# CONTINUE_ON_ERROR and AUTOMATION_ASSUME_ROLE removed
 
 # Colors for output
 RED='\033[0;31m'
@@ -88,21 +87,8 @@ check_prerequisites() {
     success "SNS notifications will be sent to: $SNS_TOPIC_ARN"
 }
 
-# Verify SSM documents exist and are available
-verify_ssm_documents() {
-    log "Verifying SSM documents are available..."
-    
-    # Only check the main document (base install)
-    if aws ssm describe-document --name "$SSM_MAIN_DOCUMENT" --region "$REGION" >/dev/null 2>&1; then
-        success "SSM document found: $SSM_MAIN_DOCUMENT"
-    else
-        error "Missing SSM document: $SSM_MAIN_DOCUMENT"
-        error "Please deploy SSM documents first using: scripts/deploy-ssm-documents.sh"
-        exit 1
-    fi
-    
-    success "Required SSM document is available"
-}
+# No SSM document verification needed - everything in user-data
+# verify_ssm_documents() removed - not needed
 
 # Get latest Rocky Linux 9 AMI
 get_latest_ami() {
@@ -210,7 +196,14 @@ launch_instance() {
         error "user-data-bootstrap.sh file not found"
         exit 1
     fi
-    local user_data="$(cat user-data-bootstrap.sh)"
+    
+    # Prepare user-data with SNS topic ARN injection for bootstrap notifications
+    local user_data="$(cat user-data-bootstrap.sh)
+    
+# SNS topic ARN injection for bootstrap notifications
+echo '$SNS_TOPIC_ARN' > /tmp/sns-topic-arn.txt
+export SNS_TOPIC_ARN='$SNS_TOPIC_ARN'
+"
     
     INSTANCE_ID=$(aws ec2 run-instances \
         --region "$REGION" \
@@ -235,8 +228,8 @@ launch_instance() {
     echo "Instance ID: $INSTANCE_ID" > .last-instance-id
 }
 
-# Wait for instance to be fully ready with progressive status updates
-wait_for_ssm_ready() {
+# Wait for instance to be fully ready and bootstrap to complete
+wait_for_bootstrap_ready() {
     log "Waiting for Outpost instance to be fully ready (this may take 15-20 minutes)..."
     
     # Phase 1: Wait for instance to be running (usually 1-2 minutes)
@@ -332,7 +325,7 @@ wait_for_ssm_ready() {
         exit 1
     fi
     
-    success "🎉 All phases complete! Instance is fully ready for SSM automation"
+    success "🎉 All phases complete! Instance is ready, checking bootstrap completion..."
 }
 
 # Get instance public IP and assign if needed
@@ -381,128 +374,60 @@ get_public_ip() {
     echo "Public IP: $PUBLIC_IP" >> .last-instance-id
 }
 
-# Execute SSM command
-execute_ssm_command() {
-    log "Starting SSM command for Cockpit installation..."
+# Wait for bootstrap completion
+wait_for_bootstrap_completion() {
+    log "Waiting for user-data bootstrap to complete Cockpit installation..."
     
-    # Execute the complete installation document
-    COMMAND_ID=$(aws ssm send-command \
-        --region "$REGION" \
-        --document-name "$SSM_MAIN_DOCUMENT" \
-        --instance-ids "$INSTANCE_ID" \
-        --parameters "InstanceId=$INSTANCE_ID,NotificationTopic=$SNS_TOPIC_ARN" \
-        --comment "Complete Cockpit installation via simplified SSM architecture" \
-        --query 'Command.CommandId' \
-        --output text)
-    
-    if [[ -z "$COMMAND_ID" ]]; then
-        error "Failed to start SSM command"
-        exit 1
-    fi
-    
-    success "SSM command started: $COMMAND_ID"
-    echo "Command ID: $COMMAND_ID" >> .last-instance-id
-    
-    return 0
-}
-
-# Monitor SSM command execution
-monitor_ssm_execution() {
-    log "Monitoring SSM command execution..."
-    
-    local execution_complete=false
+    local bootstrap_complete=false
     local check_count=0
     local max_checks=120  # 60 minutes max for complete installation
     
-    while [[ $execution_complete == false ]] && [[ $check_count -lt $max_checks ]]; do
+    while [[ $bootstrap_complete == false ]] && [[ $check_count -lt $max_checks ]]; do
         ((check_count++))
         
-        # Get command status
-        local command_status=$(aws ssm get-command-invocation \
-            --region "$REGION" \
-            --command-id "$COMMAND_ID" \
-            --instance-id "$INSTANCE_ID" \
-            --query 'Status' \
-            --output text 2>/dev/null || echo "Unknown")
-        
-        case "$command_status" in
-            "Success")
-                execution_complete=true
-                success "SSM command completed successfully!"
-                ;;
-            "Failed"|"Cancelled"|"TimedOut")
-                execution_complete=true
-                error "SSM command failed with status: $command_status"
-                
-                # Get failure details
-                local failure_message=$(aws ssm get-command-invocation \
-                    --region "$REGION" \
-                    --command-id "$COMMAND_ID" \
-                    --instance-id "$INSTANCE_ID" \
-                    --query 'StandardErrorContent' \
-                    --output text 2>/dev/null || echo "No error details available")
-                
-                error "Failure details: $failure_message"
-                return 1
-                ;;
-            "InProgress"|"Pending")
-                log "SSM command in progress... (check $check_count/$max_checks)"
-                ;;
-            *)
-                log "SSM command status: $command_status (check $check_count/$max_checks)"
-                ;;
-        esac
-        
-        if [[ $execution_complete == false ]]; then
+        # Check if bootstrap completion marker exists via SSH
+        if ssh -i ryanfill.pem -o ConnectTimeout=10 -o StrictHostKeyChecking=no rocky@"$PUBLIC_IP" "test -f /tmp/bootstrap-complete" >/dev/null 2>&1; then
+            bootstrap_complete=true
+            success "Bootstrap and Cockpit installation completed successfully!"
+        else
+            log "Bootstrap in progress... (check $check_count/$max_checks)"
             sleep 30  # Check every 30 seconds
         fi
     done
     
-    if [[ $execution_complete == false ]]; then
-        warning "SSM command monitoring timed out after 60 minutes"
-        log "Check command status with: aws ssm get-command-invocation --region $REGION --command-id $COMMAND_ID --instance-id $INSTANCE_ID"
+    if [[ $bootstrap_complete == false ]]; then
+        warning "Bootstrap completion check timed out after 60 minutes"
+        log "Check bootstrap status manually: ssh -i ryanfill.pem rocky@$PUBLIC_IP 'sudo tail -f /var/log/user-data-bootstrap.log'"
         return 1
     fi
     
     return 0
 }
 
+# No SSM monitoring needed - bootstrap handles everything
+# monitor_ssm_execution() removed - not needed
 
-# Verify Cockpit installation via SSM
-verify_cockpit_via_ssm() {
-    log "Verifying Cockpit installation via SSM..."
+
+# Verify Cockpit installation via SSH
+verify_cockpit_installation() {
+    log "Verifying Cockpit installation..."
     
-    # Run verification command via SSM
-    local command_id=$(aws ssm send-command \
-        --region "$REGION" \
-        --instance-ids "$INSTANCE_ID" \
-        --document-name "AWS-RunShellScript" \
-        --parameters 'commands=["systemctl is-active cockpit.socket", "curl -k -s --connect-timeout 5 https://localhost:9090/ >/dev/null && echo \"Cockpit web interface accessible\" || echo \"Cockpit web interface not accessible\""]' \
-        --query 'Command.CommandId' \
-        --output text)
+    # Check if Cockpit is running via SSH
+    local cockpit_status=$(ssh -i ryanfill.pem -o ConnectTimeout=10 -o StrictHostKeyChecking=no rocky@"$PUBLIC_IP" "systemctl is-active cockpit.socket" 2>/dev/null || echo "inactive")
     
-    if [[ -z "$command_id" ]]; then
-        warning "Failed to send verification command via SSM"
-        return 1
-    fi
-    
-    # Wait for command completion
-    sleep 10
-    
-    # Get command results
-    local verification_output=$(aws ssm get-command-invocation \
-        --region "$REGION" \
-        --command-id "$command_id" \
-        --instance-id "$INSTANCE_ID" \
-        --query 'StandardOutputContent' \
-        --output text 2>/dev/null || echo "Failed to get verification results")
-    
-    if echo "$verification_output" | grep -q "active" && echo "$verification_output" | grep -q "accessible"; then
-        success "Cockpit verification successful via SSM"
-        return 0
+    if [[ "$cockpit_status" == "active" ]]; then
+        success "Cockpit service is active"
+        
+        # Test web interface accessibility
+        if curl -k -s --connect-timeout 10 "https://$PUBLIC_IP:9090/" >/dev/null 2>&1; then
+            success "Cockpit web interface is accessible"
+            return 0
+        else
+            warning "Cockpit service active but web interface not accessible"
+            return 1
+        fi
     else
-        warning "Cockpit verification failed via SSM"
-        log "Verification output: $verification_output"
+        warning "Cockpit service not active: $cockpit_status"
         return 1
     fi
 }
@@ -520,7 +445,7 @@ open_cockpit() {
     echo "Public IP:      $PUBLIC_IP"
     echo "Cockpit URL:    $cockpit_url"
     echo "SSH Access:     ssh -i ryanfill.pem rocky@$PUBLIC_IP"
-    echo "SSM Command:    $COMMAND_ID"
+    echo "Login:          admin/rocky (password: Cockpit123)"
     echo ""
     echo "Opening Cockpit in your browser..."
     echo "═══════════════════════════════════════════════════"
@@ -542,10 +467,7 @@ cleanup() {
     if [[ -n "$INSTANCE_ID" ]]; then
         echo "Instance ID: $INSTANCE_ID"
         echo "To terminate: aws ec2 terminate-instances --region $REGION --instance-ids $INSTANCE_ID"
-    fi
-    if [[ -n "$COMMAND_ID" ]]; then
-        echo "SSM Command: $COMMAND_ID"
-        echo "To cancel: aws ssm cancel-command --region $REGION --command-id $COMMAND_ID"
+        echo "Check bootstrap: ssh -i ryanfill.pem rocky@$PUBLIC_IP 'sudo tail -f /var/log/user-data-bootstrap.log'"
     fi
     exit 1
 }
@@ -556,95 +478,71 @@ trap cleanup INT TERM
 # Main execution
 main() {
     echo "═══════════════════════════════════════════════════"
-    echo "🏗️  AWS OUTPOST COCKPIT LAUNCHER - SSM ARCHITECTURE"
+    echo "🏗️  AWS OUTPOST COCKPIT LAUNCHER - SELF-CONTAINED"
     echo "═══════════════════════════════════════════════════"
     echo "Outpost ID: $OUTPOST_ID"
     echo "Subnet ID:  $SUBNET_ID"
     echo "Instance:   $INSTANCE_TYPE"
-    echo "SSM Docs:   $SSM_MAIN_DOCUMENT"
+    echo "Method:     User-Data Bootstrap"
     echo "═══════════════════════════════════════════════════"
     echo ""
     
     check_prerequisites
-    verify_ssm_documents
     get_latest_ami
     ensure_ssm_instance_profile
     launch_instance
-    wait_for_ssm_ready
+    wait_for_bootstrap_ready
     get_public_ip
     
     # Provide immediate access information
     success "Instance launched successfully!"
     echo ""
     echo "═══════════════════════════════════════════════════"
-    echo "🚀 INSTANCE LAUNCHED - STARTING SSM AUTOMATION"
+    echo "🚀 INSTANCE LAUNCHED - COCKPIT INSTALLING VIA USER-DATA"
     echo "═══════════════════════════════════════════════════"
     echo "Instance ID: $INSTANCE_ID"
     echo "Public IP:   $PUBLIC_IP"
     echo "SSH Access:  ssh -i ryanfill.pem rocky@$PUBLIC_IP"
     echo ""
     echo "📧 You will receive email notifications for:"
-    echo "   • Installation start"
-    echo "   • Component progress" 
+    echo "   • Bootstrap start and network readiness"
+    echo "   • Cockpit installation progress"
     echo "   • Installation completion"
     echo "   • Any errors or failures"
     echo ""
-    echo "⏳ IMPORTANT: Outpost instances take longer to initialize"
-    echo "   • Instance startup: ~15-20 minutes total"
-    echo "   • Network connectivity establishment takes time"
-    echo "   • This is normal behavior for Outpost infrastructure"
+    echo "⏳ IMPORTANT: Complete installation via user-data"
+    echo "   • Total time: ~20-30 minutes on Outpost"
+    echo "   • Everything installs automatically during bootstrap"
+    echo "   • No SSM documents needed"
     echo ""
-    echo "🔄 Starting SSM readiness check (with progress updates)..."
+    echo "🔄 Waiting for bootstrap completion..."
     echo "═══════════════════════════════════════════════════"
     
-    # Execute SSM automation
-    if execute_ssm_command; then
+    # Wait for bootstrap completion
+    if wait_for_bootstrap_completion; then
         echo ""
-        echo "📋 SSM Command started successfully!"
-        echo "   Command ID: $COMMAND_ID"
+        echo "📋 Bootstrap completed successfully!"
         echo ""
         
-        # Ask user if they want to monitor execution progress
-        read -p "Do you want to monitor SSM execution progress? (y/N): " -n 1 -r
-        echo
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            if monitor_ssm_execution; then
-                # Verify installation
-                if verify_cockpit_via_ssm; then
-                    open_cockpit
-                else
-                    warning "Installation completed but verification failed"
-                    echo "Cockpit URL: https://$PUBLIC_IP:9090"
-                    echo "Manual verification: curl -k https://$PUBLIC_IP:9090/"
-                fi
-            else
-                warning "SSM execution monitoring failed or timed out"
-                echo ""
-                echo "🔧 Individual component retry options:"
-                echo "   System prep:    aws ssm send-command --document-name cockpit-system-prep --instance-ids $INSTANCE_ID"
-                echo "   Core install:   aws ssm send-command --document-name cockpit-core-install --instance-ids $INSTANCE_ID" 
-                echo "   Services setup: aws ssm send-command --document-name cockpit-services-setup --instance-ids $INSTANCE_ID"
-                echo "   Extensions:     aws ssm send-command --document-name cockpit-extensions --instance-ids $INSTANCE_ID"
-                echo "   User config:    aws ssm send-command --document-name cockpit-user-config --instance-ids $INSTANCE_ID"
-                echo "   Finalization:   aws ssm send-command --document-name cockpit-finalize --instance-ids $INSTANCE_ID"
-                echo ""
-                echo "🔄 Or restart full automation:"
-                echo "   aws ssm start-automation-execution --document-name cockpit-deploy-automation --parameters \"InstanceId=$INSTANCE_ID,NotificationTopic=$SNS_TOPIC_ARN\""
-                echo ""
-                echo "📊 Check execution status:"
-                echo "   aws ssm get-command-invocation --region $REGION --command-id $COMMAND_ID --instance-id $INSTANCE_ID"
-            fi
+        # Verify installation
+        if verify_cockpit_installation; then
+            open_cockpit
         else
-            echo "SSM automation is running in the background."
-            echo "Check your email for progress notifications."
+            warning "Installation completed but verification failed"
             echo "Cockpit URL: https://$PUBLIC_IP:9090"
-            echo ""
-            echo "📊 Monitor execution:"
-            echo "   aws ssm get-command-invocation --region $REGION --command-id $COMMAND_ID --instance-id $INSTANCE_ID"
+            echo "Manual verification: curl -k https://$PUBLIC_IP:9090/"
+            echo "Check logs: ssh -i ryanfill.pem rocky@$PUBLIC_IP 'sudo tail -f /var/log/user-data-bootstrap.log'"
         fi
     else
-        error "Failed to start SSM automation"
-        exit 1
+        warning "Bootstrap completion check failed or timed out"
+        echo ""
+        echo "🔧 Manual troubleshooting:"
+        echo "   Check logs:     ssh -i ryanfill.pem rocky@$PUBLIC_IP 'sudo tail -f /var/log/user-data-bootstrap.log'"
+        echo "   Check status:   ssh -i ryanfill.pem rocky@$PUBLIC_IP 'systemctl status cockpit.socket'"
+        echo "   Test Cockpit:   curl -k https://$PUBLIC_IP:9090/"
+        echo ""
+        echo "📊 Bootstrap may still be running - check manually:"
+        echo "   https://$PUBLIC_IP:9090 (may take additional time)"
     fi
 }
 
