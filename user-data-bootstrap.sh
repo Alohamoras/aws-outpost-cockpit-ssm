@@ -19,12 +19,12 @@ echo "Instance ID: $INSTANCE_ID"
 echo "Region: $REGION"
 
 # Outpost-optimized timeouts (hardcoded for bare metal Outpost instances)
-MAX_NETWORK_ATTEMPTS=30
-NETWORK_TIMEOUT_BASE=90
+MAX_NETWORK_ATTEMPTS=40
+NETWORK_CHECK_INTERVAL=60  # Check every 1 minute
 SSM_REGISTRATION_WAIT=180
 
 echo "Bootstrap configured for AWS Outpost bare metal instances"
-echo "Network attempts: $MAX_NETWORK_ATTEMPTS, Base timeout: ${NETWORK_TIMEOUT_BASE}s, SSM wait: ${SSM_REGISTRATION_WAIT}s"
+echo "Network attempts: $MAX_NETWORK_ATTEMPTS, Check interval: ${NETWORK_CHECK_INTERVAL}s (40 minutes total), SSM wait: ${SSM_REGISTRATION_WAIT}s"
 
 # SNS notification function (simple, no dependencies)
 send_bootstrap_notification() {
@@ -83,10 +83,9 @@ while [[ $network_ready == false ]] && [[ $network_attempt -le $MAX_NETWORK_ATTE
         exit 1
     fi
     
-    # Exponential backoff optimized for Outpost timing
-    local wait_time=$((NETWORK_TIMEOUT_BASE + (network_attempt * 30)))
-    echo "Network not ready, waiting $wait_time seconds before retry..."
-    sleep $wait_time
+    # Simple consistent interval for predictable timing
+    echo "Network not ready, waiting $NETWORK_CHECK_INTERVAL seconds before retry..."
+    sleep $NETWORK_CHECK_INTERVAL
     ((network_attempt++))
 done
 
