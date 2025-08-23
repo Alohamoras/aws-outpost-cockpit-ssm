@@ -276,7 +276,7 @@ wait_for_bootstrap_ready() {
     log "Phase 3/4: Waiting for SSH connectivity..."
     local ssh_ready=false
     local ssh_attempts=0
-    local max_ssh_attempts=20  # 10 minutes at 30-second intervals
+    local max_ssh_attempts=60  # 30 minutes at 30-second intervals
     
     while [[ $ssh_ready == false ]] && [[ $ssh_attempts -lt $max_ssh_attempts ]]; do
         if ssh -i ryanfill.pem -o ConnectTimeout=5 -o StrictHostKeyChecking=no rocky@"$PUBLIC_IP" "echo 'SSH ready'" >/dev/null 2>&1; then
