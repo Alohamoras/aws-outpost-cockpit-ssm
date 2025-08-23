@@ -183,7 +183,7 @@ ssh -i ryanfill.pem rocky@<instance-ip> 'sudo tail -f /var/log/user-data-bootstr
 
 ## 📝 License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is released into the public domain under The Unlicense - see the [LICENSE](LICENSE) file for details. You can do whatever you want with this code!
 
 ## 🙏 Acknowledgments
 
