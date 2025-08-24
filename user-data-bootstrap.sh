@@ -11,54 +11,61 @@ echo "AWS OUTPOST BOOTSTRAP STARTED"
 echo "Start Time: $(date)"
 echo "=============================================="
 
-# Get instance metadata early (for notifications)
-echo "Gathering instance metadata..."
-INSTANCE_ID=$(curl -s --max-time 10 http://169.254.169.254/latest/meta-data/instance-id 2>/dev/null || echo "UNKNOWN")
-REGION=$(curl -s --max-time 10 http://169.254.169.254/latest/meta-data/placement/region 2>/dev/null || echo "us-east-1")
-echo "Instance ID: $INSTANCE_ID"
-echo "Region: $REGION"
-
 # Outpost-optimized timeouts (hardcoded for bare metal Outpost instances)
 MAX_NETWORK_ATTEMPTS=40
 NETWORK_CHECK_INTERVAL=60  # Check every 1 minute
-SSM_REGISTRATION_WAIT=180
-
 echo "Bootstrap configured for AWS Outpost bare metal instances"
-echo "Network attempts: $MAX_NETWORK_ATTEMPTS, Check interval: ${NETWORK_CHECK_INTERVAL}s (40 minutes total), SSM wait: ${SSM_REGISTRATION_WAIT}s"
+echo "Network attempts: $MAX_NETWORK_ATTEMPTS, Check interval: ${NETWORK_CHECK_INTERVAL}s (40 minutes total)"
 
-# SNS notification function (simple, no dependencies)
+# Create SNS topic file early (value will be substituted by launch script)
+echo "{{SNS_TOPIC_ARN}}" > /tmp/sns-topic-arn.txt
+echo "SNS topic ARN configured for notifications"
+
+# SNS notification function (simplified, reliable)
 send_bootstrap_notification() {
     local status="$1"
     local message="$2"
     
-    # Only send if we can determine SNS topic from environment or common locations
+    # Get SNS topic from file (created early in bootstrap with launch script substitution)
     local sns_topic=""
-    
-    # Try to get SNS topic from common environment locations
     if [[ -f /tmp/sns-topic-arn.txt ]]; then
-        sns_topic=$(cat /tmp/sns-topic-arn.txt)
-    elif [[ -n "$SNS_TOPIC_ARN" ]]; then
-        sns_topic="$SNS_TOPIC_ARN"
-    else
-        # Try getting from SSM Parameter Store if AWS CLI works
-        sns_topic=$(aws ssm get-parameter --name "/cockpit-deployment/sns-topic-arn" --region "$REGION" --query 'Parameter.Value' --output text 2>/dev/null || echo "")
+        sns_topic=$(cat /tmp/sns-topic-arn.txt 2>/dev/null | tr -d '\n')
     fi
     
-    if [[ -n "$sns_topic" && "$sns_topic" != "None" ]]; then
-        aws sns publish \
-            --region "$REGION" \
-            --topic-arn "$sns_topic" \
-            --subject "Bootstrap $status - $INSTANCE_ID" \
-            --message "$message" 2>/dev/null || echo "SNS notification failed (expected during early bootstrap)"
+    # Fallback to environment variable if file doesn't exist or is empty
+    if [[ -z "$sns_topic" && -n "$SNS_TOPIC_ARN" ]]; then
+        sns_topic="$SNS_TOPIC_ARN"
+    fi
+    
+    # Send notification if we have a valid topic ARN and AWS CLI
+    if [[ -n "$sns_topic" && "$sns_topic" != "None" && "$sns_topic" != "{{SNS_TOPIC_ARN}}" ]]; then
+        # Check if AWS CLI is available (may not be installed yet in early bootstrap)
+        if command -v aws >/dev/null 2>&1; then
+            # Use region fallback if not set yet (early bootstrap calls)
+            local region="${REGION:-us-east-1}"
+            echo "📧 Sending SNS notification: $status"
+            
+            if aws sns publish \
+                --region "$region" \
+                --topic-arn "$sns_topic" \
+                --subject "Bootstrap $status - ${INSTANCE_ID:-UNKNOWN}" \
+                --message "$message" 2>&1; then
+                echo "✅ SNS notification sent successfully"
+            else
+                echo "⚠️ SNS notification failed (AWS CLI error above)"
+            fi
+        else
+            echo "ℹ️ SNS notification skipped - AWS CLI not available yet"
+        fi
     else
-        echo "SNS notification skipped - no topic configured"
+        echo "ℹ️ SNS notification skipped - no valid topic configured"
     fi
 }
 
 # PHASE 1: NETWORK READINESS (CRITICAL - MUST COME FIRST)
 echo ""
 echo "=== PHASE 1: NETWORK READINESS VALIDATION ==="
-echo "$(date): Waiting for Outpost network connectivity before any package operations..."
+echo "$(date): Waiting for Outpost network connectivity before any operations (including metadata)..."
 
 # Progressive network readiness check with exponential backoff
 network_ready=false
@@ -90,12 +97,21 @@ while [[ $network_ready == false ]] && [[ $network_attempt -le $MAX_NETWORK_ATTE
 done
 
 echo "$(date): Network readiness validation completed successfully"
-send_bootstrap_notification "NETWORK_READY" "🌐 Network connectivity established on instance $INSTANCE_ID after $network_attempt attempts. Ready for package operations."
 
-# PHASE 2: SYSTEM UPDATES (NOW SAFE TO DO NETWORK OPERATIONS)
+# PHASE 2: INSTANCE METADATA GATHERING (NOW SAFE AFTER NETWORK IS READY)
 echo ""
-echo "=== PHASE 2: SYSTEM PACKAGE UPDATES ==="
-echo "$(date): Network is ready, proceeding with system updates..."
+echo "=== PHASE 2: INSTANCE METADATA GATHERING ==="
+echo "$(date): Network is ready, now gathering instance metadata..."
+INSTANCE_ID=$(curl -s --max-time 10 http://169.254.169.254/latest/meta-data/instance-id 2>/dev/null || echo "UNKNOWN")
+REGION=$(curl -s --max-time 10 http://169.254.169.254/latest/meta-data/placement/region 2>/dev/null || echo "us-east-1")
+echo "Instance ID: $INSTANCE_ID"
+echo "Region: $REGION"
+echo "✅ Instance metadata gathered successfully"
+
+# PHASE 3: SYSTEM UPDATES (NOW SAFE TO DO NETWORK OPERATIONS)
+echo ""
+echo "=== PHASE 3: SYSTEM PACKAGE UPDATES ==="
+echo "$(date): Network and metadata ready, proceeding with system updates..."
 
 # Enable retries for DNF operations now that network is confirmed working
 retry_dnf() {
@@ -123,66 +139,104 @@ retry_dnf() {
 
 # Update system packages
 echo "Updating system packages..."
+SYSTEM_UPDATE_FAILED=false
 if ! retry_dnf update -y; then
     echo "❌ System package update failed"
+    SYSTEM_UPDATE_FAILED=true
+else
+    echo "✅ System packages updated successfully"
+fi
+
+# AWS CLI Installation (required for SNS notifications and SSM verification - install even if system updates failed)
+echo "Installing AWS CLI..."
+AWS_CLI_INSTALLED=false
+
+# Try installing via DNF first (most reliable if available)
+if retry_dnf install -y awscli; then
+    echo "✅ AWS CLI installed via DNF"
+    AWS_CLI_INSTALLED=true
+elif retry_dnf install -y python3-pip && pip3 install awscli --break-system-packages; then
+    echo "✅ AWS CLI installed via pip3"
+    AWS_CLI_INSTALLED=true
+else
+    echo "⚠️ AWS CLI installation failed - SNS notifications and SSM verification will be skipped"
+fi
+
+# Verify AWS CLI installation
+if command -v aws >/dev/null 2>&1; then
+    echo "✅ AWS CLI is available: $(aws --version 2>&1 | head -n1)"
+    AWS_CLI_INSTALLED=true
+else
+    echo "⚠️ AWS CLI not found in PATH after installation attempt"
+    AWS_CLI_INSTALLED=false
+fi
+
+# Now send notifications after AWS CLI is available
+send_bootstrap_notification "NETWORK_READY" "🌐 Network connectivity established on instance $INSTANCE_ID after $network_attempt attempts. Ready for operations."
+
+# Handle system update failure now that we can send notifications
+if [ "$SYSTEM_UPDATE_FAILED" = true ]; then
     send_bootstrap_notification "FAILED" "System package update failed on instance $INSTANCE_ID during bootstrap"
     exit 1
 fi
 
-echo "✅ System packages updated successfully"
-
-# PHASE 3: SSM AGENT INSTALLATION (NETWORK-DEPENDENT)
+# PHASE 4: SSM AGENT INSTALLATION (NETWORK-DEPENDENT)
 echo ""
-echo "=== PHASE 3: AWS SSM AGENT INSTALLATION ==="
+echo "=== PHASE 4: AWS SSM AGENT INSTALLATION ==="
 echo "$(date): Installing AWS SSM Agent..."
 
 # Install SSM Agent from Amazon's direct URL (now safe since network is ready)
 echo "Installing AWS SSM Agent from Amazon's repository..."
 SSM_URL="https://s3.amazonaws.com/ec2-downloads-windows/SSMAgent/latest/linux_amd64/amazon-ssm-agent.rpm"
-if ! retry_dnf install -y "$SSM_URL"; then
-    echo "❌ SSM Agent installation failed"
-    send_bootstrap_notification "FAILED" "SSM Agent installation failed on instance $INSTANCE_ID during bootstrap"
-    exit 1
-fi
-
-echo "✅ SSM Agent installed successfully"
-
-# Enable and start SSM Agent
-echo "Enabling and starting SSM Agent service..."
-systemctl enable amazon-ssm-agent
-systemctl start amazon-ssm-agent
-
-# Verify SSM Agent is running
-if systemctl is-active --quiet amazon-ssm-agent; then
-    echo "✅ SSM Agent is running"
+SSM_INSTALLED=false
+if retry_dnf install -y "$SSM_URL"; then
+    echo "✅ SSM Agent installed successfully"
+    SSM_INSTALLED=true
 else
-    echo "⚠️ SSM Agent service status unclear, continuing..."
+    echo "⚠️ SSM Agent installation failed - continuing with Cockpit installation"
+    send_bootstrap_notification "SSM_FAILED" "SSM Agent installation failed on instance $INSTANCE_ID, but continuing with Cockpit deployment"
 fi
 
-# PHASE 4: SSM AGENT REGISTRATION WAIT
-echo ""
-echo "=== PHASE 4: SSM AGENT REGISTRATION ==="
-echo "$(date): Waiting for SSM Agent to register with AWS Systems Manager..."
-
-# Extended wait for SSM registration (optimized for Outpost)
-echo "Waiting $SSM_REGISTRATION_WAIT seconds for SSM agent registration..."
-sleep $SSM_REGISTRATION_WAIT
-
-# Test SSM connectivity if AWS CLI is available
-if command -v aws >/dev/null 2>&1; then
-    echo "Testing SSM connectivity..."
-    if aws ssm describe-instance-information --region "$REGION" --filters "Name=InstanceIds,Values=$INSTANCE_ID" --query 'InstanceInformationList[0].PingStatus' --output text 2>/dev/null | grep -q "Online"; then
-        echo "✅ SSM Agent registered and online"
+# Enable and start SSM Agent (only if installation succeeded)
+if [ "$SSM_INSTALLED" = true ]; then
+    echo "Enabling and starting SSM Agent service..."
+    systemctl enable amazon-ssm-agent
+    systemctl start amazon-ssm-agent
+    
+    # Verify SSM Agent is running
+    if systemctl is-active --quiet amazon-ssm-agent; then
+        echo "✅ SSM Agent is running"
     else
-        echo "⚠️ SSM Agent registration status unclear (may still be in progress)"
+        echo "⚠️ SSM Agent service status unclear, continuing..."
     fi
 else
-    echo "ℹ️ AWS CLI not available for SSM connectivity test"
+    echo "⏭️ Skipping SSM Agent service configuration (installation failed)"
 fi
 
-# PHASE 5: COMPLETE COCKPIT INSTALLATION
+# PHASE 5: SSM AGENT VERIFICATION
 echo ""
-echo "=== PHASE 5: COMPLETE COCKPIT INSTALLATION ==="
+echo "=== PHASE 5: SSM AGENT VERIFICATION ==="
+echo "$(date): Verifying SSM Agent connectivity (no wait needed after extensive network validation)..."
+
+# Test SSM connectivity only if SSM was successfully installed
+if [ "$SSM_INSTALLED" = true ]; then
+    echo "Testing SSM connectivity immediately..."
+    if command -v aws >/dev/null 2>&1; then
+        if aws ssm describe-instance-information --region "$REGION" --filters "Name=InstanceIds,Values=$INSTANCE_ID" --query 'InstanceInformationList[0].PingStatus' --output text 2>/dev/null | grep -q "Online"; then
+            echo "✅ SSM Agent registered and online"
+        else
+            echo "⚠️ SSM Agent registration status unclear (this is normal and non-critical)"
+        fi
+    else
+        echo "ℹ️ AWS CLI not available for SSM connectivity test"
+    fi
+else
+    echo "⏭️ Skipping SSM connectivity test (installation failed)"
+fi
+
+# PHASE 6: COMPLETE COCKPIT INSTALLATION
+echo ""
+echo "=== PHASE 6: COMPLETE COCKPIT INSTALLATION ==="
 echo "$(date): Starting complete Cockpit installation..."
 send_bootstrap_notification "COCKPIT_STARTED" "🚀 Starting complete Cockpit installation on instance $INSTANCE_ID"
 
@@ -201,16 +255,32 @@ retry_dnf install -y cockpit-machines cockpit-podman podman buildah skopeo cockp
 
 # Third-party extensions (45Drives)
 echo "Installing third-party extensions..."
-cat > /etc/yum.repos.d/45drives.repo << 'EOF'
-[45drives]
-name=45Drives Repository  
-baseurl=https://repo.45drives.com/rocky/$releasever/$basearch
-enabled=1
-gpgcheck=1
-gpgkey=https://repo.45drives.com/key/gpg.asc
-EOF
-rpm --import https://repo.45drives.com/key/gpg.asc 2>/dev/null || echo "GPG key import failed"
-retry_dnf install -y cockpit-file-sharing cockpit-navigator cockpit-identities cockpit-sensors || echo "45Drives packages unavailable"
+DRIVES_INSTALLED=false
+
+# Remove any existing problematic repository file
+echo "Cleaning up any existing 45drives repository..."
+rm -f /etc/yum.repos.d/45drives.repo
+
+# Use official 45drives setup script (more reliable than manual repo creation)
+echo "Setting up 45drives repository using official script..."
+if curl -sSL https://repo.45drives.com/setup | bash; then
+    echo "✅ 45drives repository setup successful"
+    
+    # Clean and refresh the cache
+    echo "Refreshing package cache..."
+    dnf clean all >/dev/null 2>&1
+    dnf makecache >/dev/null 2>&1
+    
+    # Install 45drives packages with retry logic
+    if retry_dnf install -y cockpit-file-sharing cockpit-navigator cockpit-identities cockpit-sensors; then
+        echo "✅ 45drives extensions installed successfully"
+        DRIVES_INSTALLED=true
+    else
+        echo "⚠️ Some 45drives packages unavailable, continuing without them"
+    fi
+else
+    echo "⚠️ 45drives repository setup failed, skipping third-party extensions"
+fi
 
 # Service configuration
 echo "Configuring services..."
@@ -250,9 +320,9 @@ else
     exit 1
 fi
 
-# PHASE 6: BOOTSTRAP COMPLETION
+# PHASE 7: BOOTSTRAP COMPLETION
 echo ""
-echo "=== PHASE 6: BOOTSTRAP COMPLETION ==="
+echo "=== PHASE 7: BOOTSTRAP COMPLETION ==="
 echo "$(date): Finalizing bootstrap process..."
 
 # Create status markers for launch script
@@ -273,6 +343,21 @@ echo "Instance ID: $INSTANCE_ID"
 echo "Public IP: $PUBLIC_IP"
 echo "Cockpit URL: https://$PUBLIC_IP:9090"
 echo "Users: admin/rocky (Password: Cockpit123)"
+if [ "$SSM_INSTALLED" = true ]; then
+    echo "SSM Agent: ✅ Installed and configured"
+else
+    echo "SSM Agent: ⚠️ Installation failed (non-critical)"
+fi
+if [ "$DRIVES_INSTALLED" = true ]; then
+    echo "45Drives Extensions: ✅ Installed successfully"
+else
+    echo "45Drives Extensions: ⚠️ Installation failed (non-critical)"
+fi
+if command -v aws >/dev/null 2>&1; then
+    echo "AWS CLI: ✅ Available ($(aws --version 2>&1 | head -n1 | cut -d' ' -f1-2))"
+else
+    echo "AWS CLI: ⚠️ Not available (SNS notifications disabled)"
+fi
 echo "Completion Time: $(date)"
 echo "Network Attempts: $network_attempt/$MAX_NETWORK_ATTEMPTS"
 echo "=============================================="

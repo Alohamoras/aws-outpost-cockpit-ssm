@@ -24,6 +24,9 @@ REGION="${REGION:-us-east-1}"
 # SNS Topic ARN for notifications (required)
 SNS_TOPIC_ARN="${SNS_TOPIC_ARN}"
 
+# Storage configuration (optional)
+CONFIGURE_STORAGE="${CONFIGURE_STORAGE:-false}"
+
 # These variables are no longer needed for self-contained user-data approach
 # CONTINUE_ON_ERROR and AUTOMATION_ASSUME_ROLE removed
 
@@ -199,13 +202,13 @@ launch_instance() {
         exit 1
     fi
     
-    # Prepare user-data with SNS topic ARN injection for bootstrap notifications
-    local user_data="$(cat user-data-bootstrap.sh)
+    # Prepare user-data with SNS topic ARN substitution
+    local user_data="$(cat user-data-bootstrap.sh)"
     
-# SNS topic ARN injection for bootstrap notifications
-echo '$SNS_TOPIC_ARN' > /tmp/sns-topic-arn.txt
-export SNS_TOPIC_ARN='$SNS_TOPIC_ARN'
-"
+    # Replace the placeholder with actual SNS topic ARN from .env
+    user_data="${user_data//\{\{SNS_TOPIC_ARN\}\}/$SNS_TOPIC_ARN}"
+    
+    log "SNS topic ARN configured for bootstrap notifications"
     
     INSTANCE_ID=$(aws ec2 run-instances \
         --region "$REGION" \
@@ -230,6 +233,201 @@ export SNS_TOPIC_ARN='$SNS_TOPIC_ARN'
     echo "Instance ID: $INSTANCE_ID" > .last-instance-id
 }
 
+# New streamlined functions for better user experience
+
+# Wait for basic instance readiness (running state)
+wait_for_instance_ready() {
+    log "Waiting for instance to reach 'running' state..."
+    aws ec2 wait instance-running --region "$REGION" --instance-ids "$INSTANCE_ID"
+    success "✅ Instance is now running"
+}
+
+# Verify public IP is assigned and accessible
+verify_public_ip() {
+    log "Verifying public IP assignment..."
+    
+    PUBLIC_IP=$(aws ec2 describe-instances \
+        --region "$REGION" \
+        --instance-ids "$INSTANCE_ID" \
+        --query 'Reservations[0].Instances[0].PublicIpAddress' \
+        --output text 2>/dev/null)
+    
+    if [[ -z "$PUBLIC_IP" || "$PUBLIC_IP" == "None" ]]; then
+        error "No public IP assigned to instance"
+        log "Attempting to assign Elastic IP..."
+        
+        # Try to find an available Elastic IP
+        local available_eip=$(aws ec2 describe-addresses \
+            --region "$REGION" \
+            --query 'Addresses[?InstanceId==null && NetworkInterfaceId==null] | [0].AllocationId' \
+            --output text 2>/dev/null)
+        
+        if [[ -n "$available_eip" && "$available_eip" != "None" ]]; then
+            log "Found available Elastic IP, associating..."
+            aws ec2 associate-address \
+                --region "$REGION" \
+                --instance-id "$INSTANCE_ID" \
+                --allocation-id "$available_eip" >/dev/null
+            
+            PUBLIC_IP=$(aws ec2 describe-instances \
+                --region "$REGION" \
+                --instance-ids "$INSTANCE_ID" \
+                --query 'Reservations[0].Instances[0].PublicIpAddress' \
+                --output text 2>/dev/null)
+        fi
+        
+        if [[ -z "$PUBLIC_IP" || "$PUBLIC_IP" == "None" ]]; then
+            error "Failed to assign public IP. Instance cannot be accessed for Cockpit."
+            exit 1
+        fi
+    fi
+    
+    success "✅ Public IP assigned: $PUBLIC_IP"
+    echo "Instance ID: $INSTANCE_ID" > .last-instance-id
+    echo "Public IP: $PUBLIC_IP" >> .last-instance-id
+}
+
+# Verify security group allows SSH access from current IP
+verify_ssh_access() {
+    log "Verifying security group allows SSH access..."
+    
+    # Get current public IP
+    local my_ip=$(curl -s https://checkip.amazonaws.com || curl -s https://ipinfo.io/ip)
+    if [[ -z "$my_ip" ]]; then
+        warning "Could not determine your current public IP"
+        warning "Please ensure security group $SECURITY_GROUP_ID allows SSH (port 22) from your IP"
+        return 0
+    fi
+    
+    # Check if security group allows SSH from this IP
+    local ssh_allowed=$(aws ec2 describe-security-groups \
+        --region "$REGION" \
+        --group-ids "$SECURITY_GROUP_ID" \
+        --query "SecurityGroups[0].IpPermissions[?FromPort==\`22\` && ToPort==\`22\`].IpRanges[?contains(CidrIp, '$my_ip') || CidrIp=='0.0.0.0/0']" \
+        --output text 2>/dev/null)
+    
+    if [[ -z "$ssh_allowed" ]]; then
+        warning "Security group may not allow SSH access from your IP ($my_ip)"
+        warning "If SSH connectivity fails, please add rule: SSH (port 22) from $my_ip/32"
+    else
+        success "✅ Security group allows SSH access from your IP ($my_ip)"
+    fi
+}
+
+# Wait for SSH connectivity with extended timeout
+wait_for_ssh_connectivity() {
+    log "Waiting for SSH connectivity (up to 60 minutes for Outpost instances)..."
+    
+    local ssh_ready=false
+    local attempts=0
+    local max_attempts=120  # 60 minutes at 30-second intervals
+    
+    while [[ $ssh_ready == false ]] && [[ $attempts -lt $max_attempts ]]; do
+        ((attempts++))
+        
+        if ssh -i "$KEY_FILE" -o ConnectTimeout=10 -o StrictHostKeyChecking=no rocky@"$PUBLIC_IP" "echo 'SSH OK'" >/dev/null 2>&1; then
+            ssh_ready=true
+            success "✅ SSH connectivity established after $attempts attempts ($((attempts * 30 / 60)) minutes)"
+        else
+            log "SSH attempt $attempts/$max_attempts failed, retrying in 30 seconds..."
+            sleep 30
+        fi
+    done
+    
+    if [[ $ssh_ready == false ]]; then
+        error "SSH connectivity failed after 60 minutes"
+        error "Please check:"
+        error "1. Security group allows SSH (port 22) from your IP"
+        error "2. Key pair '$KEY_NAME' is correct"
+        error "3. Instance is fully booted"
+        exit 1
+    fi
+}
+
+# Monitor bootstrap progress via real-time log tailing
+monitor_bootstrap_progress() {
+    log "🔄 Monitoring bootstrap progress in real-time..."
+    echo ""
+    echo "═══════════════════════════════════════════════════"
+    echo "📋 BOOTSTRAP LOG (press Ctrl+C to stop monitoring)"
+    echo "═══════════════════════════════════════════════════"
+    
+    # Tail the bootstrap log until completion
+    ssh -i "$KEY_FILE" -o StrictHostKeyChecking=no rocky@"$PUBLIC_IP" \
+        "sudo tail -f /var/log/user-data-bootstrap.log" | \
+        while IFS= read -r line; do
+            echo "$line"
+            # Stop when we see the completion message
+            if echo "$line" | grep -q "COMPLETE COCKPIT DEPLOYMENT SUCCESS"; then
+                break
+            fi
+        done
+    
+    echo ""
+    echo "═══════════════════════════════════════════════════"
+    success "🎉 Bootstrap monitoring completed!"
+    echo "═══════════════════════════════════════════════════"
+}
+
+# Configure storage drives (optional post-bootstrap step)
+configure_storage_drives() {
+    # Check if storage configuration is enabled
+    if [[ "${CONFIGURE_STORAGE:-false}" != "true" ]]; then
+        log "Storage configuration disabled (CONFIGURE_STORAGE=false)"
+        return 0
+    fi
+    
+    log "🔧 Starting optional storage configuration..."
+    echo ""
+    echo "═══════════════════════════════════════════════════"
+    echo "💾 STORAGE CONFIGURATION (RAID + LVM)"
+    echo "═══════════════════════════════════════════════════"
+    
+    # Transfer storage configuration script to instance
+    log "Transferring storage configuration script..."
+    if ! scp -i "$KEY_FILE" -o StrictHostKeyChecking=no configure-storage.sh rocky@"$PUBLIC_IP":/tmp/; then
+        warning "Failed to transfer storage script - skipping storage configuration"
+        return 1
+    fi
+    
+    # Execute storage configuration script with real-time output
+    log "Executing storage configuration on instance..."
+    echo ""
+    
+    if ssh -i "$KEY_FILE" -o StrictHostKeyChecking=no rocky@"$PUBLIC_IP" \
+        "sudo chmod +x /tmp/configure-storage.sh && sudo /tmp/configure-storage.sh" | \
+        while IFS= read -r line; do
+            echo "$line"
+            # Stop if we see completion message
+            if echo "$line" | grep -q "Storage configuration completed successfully"; then
+                break
+            fi
+        done; then
+        
+        echo ""
+        echo "═══════════════════════════════════════════════════"
+        success "✅ Storage configuration completed successfully!"
+        echo "═══════════════════════════════════════════════════"
+        
+        # Restart services to recognize new storage
+        log "Restarting Cockpit services to recognize new storage..."
+        ssh -i "$KEY_FILE" -o StrictHostKeyChecking=no rocky@"$PUBLIC_IP" \
+            "sudo systemctl restart cockpit.socket && sudo systemctl restart libvirtd && sudo systemctl restart podman" || \
+            warning "Some services may need manual restart"
+        
+        return 0
+    else
+        echo ""
+        echo "═══════════════════════════════════════════════════"
+        warning "⚠️ Storage configuration encountered issues"
+        echo "═══════════════════════════════════════════════════"
+        log "Storage configuration failed or had warnings"
+        log "Check storage manually: ssh -i $KEY_FILE rocky@$PUBLIC_IP 'sudo lsblk'"
+        return 1
+    fi
+}
+
+# OLD FUNCTIONS (will be removed)
 # Wait for instance to be fully ready and bootstrap to complete
 wait_for_bootstrap_ready() {
     log "Waiting for Outpost instance to be fully ready (this may take 15-20 minutes)..."
@@ -486,6 +684,11 @@ main() {
     echo "Subnet ID:  $SUBNET_ID"
     echo "Instance:   $INSTANCE_TYPE"
     echo "Method:     User-Data Bootstrap"
+    if [[ "$CONFIGURE_STORAGE" == "true" ]]; then
+        echo "Storage:    Auto-configure RAID + LVM"
+    else
+        echo "Storage:    Manual (set CONFIGURE_STORAGE=true to enable)"
+    fi
     echo "═══════════════════════════════════════════════════"
     echo ""
     
@@ -493,59 +696,31 @@ main() {
     get_latest_ami
     ensure_ssm_instance_profile
     launch_instance
-    wait_for_bootstrap_ready
-    get_public_ip
+    wait_for_instance_ready
+    verify_public_ip
+    verify_ssh_access
+    wait_for_ssh_connectivity
+    monitor_bootstrap_progress
+    configure_storage_drives
     
-    # Provide immediate access information
-    success "Instance launched successfully!"
+    # Final summary after monitoring completes
+    success "🎉 Cockpit deployment completed successfully!"
     echo ""
     echo "═══════════════════════════════════════════════════"
-    echo "🚀 INSTANCE LAUNCHED - COCKPIT INSTALLING VIA USER-DATA"
+    echo "🚀 COCKPIT IS NOW READY"
     echo "═══════════════════════════════════════════════════"
     echo "Instance ID: $INSTANCE_ID"
     echo "Public IP:   $PUBLIC_IP"
+    echo "Cockpit URL: https://$PUBLIC_IP:9090"
     echo "SSH Access:  ssh -i $KEY_FILE rocky@$PUBLIC_IP"
     echo ""
-    echo "📧 You will receive email notifications for:"
-    echo "   • Bootstrap start and network readiness"
-    echo "   • Cockpit installation progress"
-    echo "   • Installation completion"
-    echo "   • Any errors or failures"
-    echo ""
-    echo "⏳ IMPORTANT: Complete installation via user-data"
-    echo "   • Total time: ~20-30 minutes on Outpost"
-    echo "   • Everything installs automatically during bootstrap"
-    echo "   • No SSM documents needed"
-    echo ""
-    echo "🔄 Waiting for bootstrap completion..."
+    echo "👤 Login credentials:"
+    echo "   Username: admin or rocky"
+    echo "   Password: Cockpit123"
     echo "═══════════════════════════════════════════════════"
     
-    # Wait for bootstrap completion
-    if wait_for_bootstrap_completion; then
-        echo ""
-        echo "📋 Bootstrap completed successfully!"
-        echo ""
-        
-        # Verify installation
-        if verify_cockpit_installation; then
-            open_cockpit
-        else
-            warning "Installation completed but verification failed"
-            echo "Cockpit URL: https://$PUBLIC_IP:9090"
-            echo "Manual verification: curl -k https://$PUBLIC_IP:9090/"
-            echo "Check logs: ssh -i $KEY_FILE rocky@$PUBLIC_IP 'sudo tail -f /var/log/user-data-bootstrap.log'"
-        fi
-    else
-        warning "Bootstrap completion check failed or timed out"
-        echo ""
-        echo "🔧 Manual troubleshooting:"
-        echo "   Check logs:     ssh -i $KEY_FILE rocky@$PUBLIC_IP 'sudo tail -f /var/log/user-data-bootstrap.log'"
-        echo "   Check status:   ssh -i $KEY_FILE rocky@$PUBLIC_IP 'systemctl status cockpit.socket'"
-        echo "   Test Cockpit:   curl -k https://$PUBLIC_IP:9090/"
-        echo ""
-        echo "📊 Bootstrap may still be running - check manually:"
-        echo "   https://$PUBLIC_IP:9090 (may take additional time)"
-    fi
+    # Try to open Cockpit automatically
+    open_cockpit
 }
 
 # Run main function
