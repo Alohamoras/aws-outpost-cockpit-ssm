@@ -251,7 +251,22 @@ fi
 # Extended services (compact installation)
 echo "Installing extended services..."
 retry_dnf groupinstall -y "Virtualization Host" || retry_dnf install -y qemu-kvm libvirt virt-install virt-manager || echo "Virtualization packages unavailable"
-retry_dnf install -y cockpit-machines cockpit-podman podman buildah skopeo cockpit-pcp pcp pcp-system-tools || echo "Some extended packages unavailable"
+
+# Install packages individually to handle missing packages gracefully
+echo "Installing virtualization and container packages..."
+retry_dnf install -y cockpit-machines || echo "cockpit-machines unavailable"
+retry_dnf install -y cockpit-podman podman buildah skopeo || echo "Container packages unavailable"
+
+# Install monitoring packages (cockpit-pcp often unavailable in Rocky 9)
+echo "Installing monitoring packages..."
+if retry_dnf install -y pcp pcp-system-tools; then
+    echo "✅ PCP monitoring tools installed"
+    # Only try cockpit-pcp if base PCP is available
+    retry_dnf install -y cockpit-pcp || echo "cockpit-pcp unavailable, using base PCP only"
+    systemctl enable --now pmcd pmlogger 2>/dev/null || echo "PCP services configuration skipped"
+else
+    echo "⚠️ PCP monitoring tools unavailable, skipping monitoring packages"
+fi
 
 # Third-party extensions (45Drives)
 echo "Installing third-party extensions..."
@@ -285,7 +300,7 @@ fi
 # Service configuration
 echo "Configuring services..."
 systemctl enable --now cockpit.socket NetworkManager
-systemctl enable --now libvirtd pmcd pmlogger 2>/dev/null || echo "Some services unavailable"
+systemctl enable --now libvirtd 2>/dev/null || echo "libvirtd service unavailable"
 if systemctl is-active --quiet firewalld; then firewall-cmd --permanent --add-service=cockpit && firewall-cmd --reload; fi
 
 # User configuration

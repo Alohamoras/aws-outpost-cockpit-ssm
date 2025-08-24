@@ -11,9 +11,9 @@ if [[ -f ../.env ]]; then
 fi
 
 REGION="${REGION:-us-east-1}"
-INSTANCE_FILE=".last-instance-id"
-KEY_NAME="${KEY_NAME:-ryanfill}"
-KEY_FILE="${KEY_NAME}.pem"
+INSTANCE_FILE="../.last-instance-id"
+KEY_NAME="${KEY_NAME:-your-key-pair-name}"
+KEY_FILE="../${KEY_NAME}.pem"
 
 # Colors for output
 RED='\033[0;31m'
@@ -97,6 +97,14 @@ show_status() {
 # Connect to instance via SSH
 ssh_connect() {
     get_last_instance
+    
+    # Check if SSH key exists
+    if [[ ! -f "$KEY_FILE" ]]; then
+        error "SSH key file not found: $KEY_FILE"
+        error "Please ensure your SSH private key is in the project root directory"
+        error "Key name should match your KEY_NAME environment variable: $KEY_NAME"
+        exit 1
+    fi
     
     if [[ -z "$PUBLIC_IP" ]]; then
         log "Getting current public IP..."

@@ -80,8 +80,13 @@ check_prerequisites() {
     # Check key file exists
     KEY_FILE="${KEY_NAME}.pem"
     if [[ ! -f "$KEY_FILE" ]]; then
-        error "Key file not found: $KEY_FILE"
-        error "Expected key file name based on KEY_NAME environment variable: $KEY_NAME"
+        error "SSH key file not found: $KEY_FILE"
+        error "Please copy your SSH private key to this directory:"
+        error "  cp /path/to/your-private-key.pem $KEY_FILE"
+        error "  chmod 400 $KEY_FILE"
+        error ""
+        error "The key name is based on your KEY_NAME environment variable: $KEY_NAME"
+        error "Make sure this matches your EC2 key pair name in AWS."
         exit 1
     fi
     

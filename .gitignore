@@ -1,7 +1,7 @@
 # Environment files
 .env
 
-# SSH Keys and certificates
+# SSH Keys and certificates (SECURITY: Never commit private keys)
 *.pem
 *.key
 *.crt

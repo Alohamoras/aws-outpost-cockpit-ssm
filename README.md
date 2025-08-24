@@ -21,16 +21,21 @@ cp .env.example .env
 # Edit .env with your AWS configuration
 ```
 
-### 2. Launch Cockpit Instance
+### 2. Add SSH Key
 ```bash
-# Add your SSH key to the directory (name it based on your KEY_NAME in .env)
-cp /path/to/your-key.pem ${KEY_NAME}.pem
+# Copy your SSH private key to the project directory
+# Name it based on your KEY_NAME in .env (e.g., if KEY_NAME=mykey, copy as mykey.pem)
+cp /path/to/your-private-key.pem ${KEY_NAME}.pem
+chmod 400 ${KEY_NAME}.pem
+```
 
+### 3. Launch Cockpit Instance
+```bash
 # Launch instance with complete self-contained Cockpit installation
 ./launch-cockpit-instance.sh
 ```
 
-### 3. Access Cockpit
+### 4. Access Cockpit
 After deployment completes (20-45 minutes), access Cockpit at:
 - **URL**: `https://YOUR_INSTANCE_IP:9090`
 - **Username**: `admin` or `rocky`
