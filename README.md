@@ -1,13 +1,13 @@
 # AWS Outpost Cockpit SSM
 
-Automated deployment of [Cockpit](https://cockpit-project.org/) web console on AWS Outpost instances using a self-contained user-data bootstrap approach. This project provides a streamlined, single-script deployment with complete Cockpit installation during instance launch.
+Automated deployment of [Cockpit](https://cockpit-project.org/) web console on AWS Outpost instances using a modern **SSM multi-phase architecture**. This project provides idempotent, resumable deployment with excellent error handling and observability.
 
 ## 🚀 Quick Start
 
 ### Prerequisites
 - AWS CLI installed and configured
 - AWS Outpost with EC2 instances
-- SNS topic for notifications (recommended)
+- SNS topic for notifications (required for progress updates)
 - SSH key pair for instance access
 
 ### 1. Setup Configuration
@@ -21,6 +21,16 @@ cp .env.example .env
 # Edit .env with your AWS configuration
 ```
 
+Required `.env` configuration:
+```bash
+OUTPOST_ID=your-outpost-id
+SUBNET_ID=your-subnet-id
+SECURITY_GROUP_ID=your-security-group-id
+KEY_NAME=your-key-name
+SNS_TOPIC_ARN=your-sns-topic-arn
+REGION=us-east-1
+```
+
 ### 2. Add SSH Key
 ```bash
 # Copy your SSH private key to the project directory
@@ -29,177 +39,204 @@ cp /path/to/your-private-key.pem ${KEY_NAME}.pem
 chmod 400 ${KEY_NAME}.pem
 ```
 
-### 3. Launch Cockpit Instance
+### 3. Deploy Cockpit
+
+#### Smart Idempotent Deployment (Recommended)
 ```bash
-# Launch instance with complete self-contained Cockpit installation
+# Launches new instance or resumes existing deployment
 ./launch-cockpit-instance.sh
+
+# Check current deployment status
+./launch-cockpit-instance.sh --status
+
+# Resume from failure point
+./launch-cockpit-instance.sh --resume
+
+# Run specific phase only
+./launch-cockpit-instance.sh --phase cockpit-core
+```
+
+#### Full SSM Multi-Phase Deployment
+```bash
+# Complete deployment with AWS SSM orchestration
+./launch-cockpit-instance-ssm.sh
 ```
 
 ### 4. Access Cockpit
-After deployment completes (20-45 minutes), access Cockpit at:
+After deployment completes (~30-45 minutes), access Cockpit at:
 - **URL**: `https://YOUR_INSTANCE_IP:9090`
 - **Username**: `admin` or `rocky`
 - **Password**: `Cockpit123`
 
 ## 📋 What Gets Installed
 
-- **Core Cockpit**: Web console with system management
-- **Virtualization**: KVM/libvirt support with VM management
+### Core Components
+- **Cockpit Web Console**: Complete system management interface
+- **Virtualization**: KVM/libvirt with VM management (cockpit-machines)
 - **Containers**: Podman with container management interface
-- **Performance Monitoring**: PCP integration for metrics
 - **Storage Management**: Disk and filesystem tools
-- **Network Configuration**: NetworkManager integration
-- **Third-party Extensions**: File manager, hardware sensors (bare metal)
+- **Package Management**: Software installation interface
+- **Network Management**: Network configuration tools
+
+### Enhanced Extensions (45Drives)
+- **File Sharing**: SMB/CIFS sharing interface
+- **Navigator**: Enhanced file browser
+- **Identity Management**: User and group management
+- **System Reports**: Comprehensive system reporting
 
 ## 🏗️ Architecture
 
-### Modular SSM Documents
-The installation is broken into manageable, reusable components:
+### SSM Multi-Phase Deployment
+The deployment uses AWS Systems Manager for reliable, observable deployment:
 
-```
-cockpit-deploy-automation (Main Orchestrator)
-├── cockpit-system-prep      → System preparation & dependencies
-├── cockpit-core-install     → Core Cockpit installation
-├── cockpit-services-setup   → Virtualization, containers, monitoring
-├── cockpit-extensions       → Third-party modules & hardware config
-├── cockpit-user-config      → User accounts & security
-└── cockpit-finalize         → Final configuration & notifications
-```
+1. **Phase 1**: Network readiness and SSM agent setup (minimal user-data)
+2. **Phase 2**: System updates and AWS CLI installation
+3. **Phase 3**: Core Cockpit installation and configuration
+4. **Phase 4**: Extensions (virtualization, containers, monitoring)
+5. **Phase 5**: Third-party enhancements (45Drives extensions)
+6. **Phase 6**: Final configuration and user setup
 
 ### Key Benefits
-- **Reliability**: Component-level error handling and retry capabilities
-- **Visibility**: SNS notifications for each deployment phase
-- **Modularity**: Individual components can be run independently
-- **Maintainability**: Smaller, focused documents are easier to modify
-- **Outpost Optimization**: Network delays and hardware detection built-in
+- ✅ **Idempotent**: Safe to re-run, resumes from failure points
+- ✅ **Observable**: Real-time progress via AWS console and SNS
+- ✅ **Resilient**: Individual phase retry without full restart  
+- ✅ **Maintainable**: Separate, focused deployment phases
+- ✅ **AWS-Native**: Leverages SSM for enterprise-grade deployment
 
-## 🛠️ Management Operations
+## 📊 Deployment Status
 
-### Instance Management
+### Monitor Progress
+```bash
+# Beautiful status display
+./launch-cockpit-instance.sh --status
+
+# Monitor via AWS Console
+# Systems Manager > Command History > Filter by Instance ID
+```
+
+### Phase Status Example
+```
+╭─────────────────────────────────────────────╮
+│          DEPLOYMENT STATUS                  │
+╰─────────────────────────────────────────────╯
+Instance ID: i-01234567890abcdef
+Public IP:   3.82.8.10
+
+Phase Status:
+┌────────────────────────────────────┬──────────────┐
+│ Phase                              │ Status       │
+├────────────────────────────────────┼──────────────┤
+│ Minimal Bootstrap                  │ ✅ Complete  │
+│ System Updates                     │ ✅ Complete  │
+│ Core Cockpit Installation          │ ✅ Complete  │
+│ Cockpit Extensions                 │ ⏸️  Pending   │
+│ Third-party Extensions             │ ⏸️  Pending   │
+│ Final Configuration                │ ⏸️  Pending   │
+└────────────────────────────────────┴──────────────┘
+```
+
+## 🛠️ Management Commands
+
+### Instance Operations
 ```bash
 # Check instance status
 ./legacy/manage-instances.sh status
 
-# SSH into instance
+# SSH into instance  
 ./legacy/manage-instances.sh ssh
 
 # Monitor installation logs
 ./legacy/manage-instances.sh logs
 
-# Open Cockpit in browser
+# Open Cockpit web interface
 ./legacy/manage-instances.sh cockpit
 
 # Check service health
 ./legacy/manage-instances.sh services
 
-# Terminate instance
+# Terminate instance (with confirmation)
 ./legacy/manage-instances.sh terminate
 ```
 
-### Component Retry
-If a component fails, retry individually:
+### Phase-Specific Operations
 ```bash
-# Retry specific components
-aws ssm send-command --document-name cockpit-core-install --instance-ids $INSTANCE_ID
-aws ssm send-command --document-name cockpit-services-setup --instance-ids $INSTANCE_ID
+# List available phases
+./launch-cockpit-instance.sh --list-phases
 
-# Or restart full automation
-aws ssm start-automation-execution --document-name cockpit-deploy-automation \
-  --parameters "InstanceId=$INSTANCE_ID,NotificationTopic=$SNS_TOPIC_ARN"
+# Run specific phase
+./launch-cockpit-instance.sh --phase system-updates
+./launch-cockpit-instance.sh --phase cockpit-core
+
+# Force new deployment (terminates existing)
+./launch-cockpit-instance.sh --force-new
 ```
 
-## ⚙️ Configuration
-
-### Environment Variables (.env)
-```bash
-# AWS Infrastructure
-OUTPOST_ID=op-0123456789abcdef0
-SUBNET_ID=subnet-0123456789abcdef0  
-SECURITY_GROUP_ID=sg-0123456789abcdef0
-KEY_NAME=your-key-pair-name
-INSTANCE_TYPE=c6id.metal
-REGION=us-east-1
-
-# Notifications (required)
-SNS_TOPIC_ARN=arn:aws:sns:us-east-1:123456789012:topic-name
-
-# Deployment Options
-SSM_MAIN_DOCUMENT=cockpit-deploy-automation
-CONTINUE_ON_ERROR=true
-AUTOMATION_ASSUME_ROLE=
-```
-
-### Security Group Requirements
-Ensure your security group allows:
-- **Inbound TCP 9090** - Cockpit web interface
-- **Inbound TCP 22** - SSH access
-- **Outbound HTTPS** - Package downloads and SSM communication
-
-## 📊 Monitoring & Troubleshooting
-
-### Deployment Monitoring
-- **SNS Notifications**: Real-time progress updates via email/SMS
-- **AWS Console**: SSM automation execution in AWS Systems Manager
-- **Instance Logs**: Component-specific logs in `/var/log/cockpit-*.log`
+## 🔧 Troubleshooting
 
 ### Common Issues
-- **Network Timeouts**: Outpost instances have built-in delays for network stabilization
-- **Package Failures**: Retry logic handles temporary repository issues
-- **Service Startup**: Non-critical services can be skipped with `CONTINUE_ON_ERROR=true`
 
-### Log Files
+#### Deployment Stuck/Failed
 ```bash
-/var/log/user-data-bootstrap.log    # Initial instance preparation
-/var/log/cockpit-system-prep.log    # System preparation component
-/var/log/cockpit-core-install.log   # Core installation component
-/var/log/cockpit-services-setup.log # Services setup component
-/var/log/cockpit-extensions.log     # Extensions component
-/var/log/cockpit-user-config.log    # User configuration component
-/var/log/cockpit-finalize.log       # Final configuration component
+# Check current status
+./launch-cockpit-instance.sh --status
+
+# Resume from failure
+./launch-cockpit-instance.sh --resume
+
+# Monitor AWS SSM console for detailed logs
+```
+
+#### Phase-Specific Failures
+```bash
+# Re-run failed phase
+./launch-cockpit-instance.sh --phase <phase-name>
+
+# Check phase logs on instance
+ssh -i ${KEY_NAME}.pem rocky@$PUBLIC_IP 'sudo tail -f /var/log/ssm-<phase>.log'
+```
+
+#### Instance Not Accessible
+- Verify security group allows port 9090 (HTTPS) and 22 (SSH)
+- Check if public IP was assigned correctly
+- Ensure SNS topic ARN is valid for notifications
+
+### Log Locations
+Phase-specific logs on the instance:
+```
+/var/log/user-data-bootstrap.log      # Phase 1 (minimal bootstrap)
+/var/log/ssm-system-updates.log       # Phase 2 (system updates)
+/var/log/ssm-cockpit-core.log         # Phase 3 (core cockpit)
+/var/log/ssm-cockpit-extensions.log   # Phase 4 (extensions)
+/var/log/ssm-cockpit-thirdparty.log   # Phase 5 (third-party)
+/var/log/ssm-cockpit-config.log       # Phase 6 (final config)
 ```
 
 ## 📚 Documentation
 
-- **[CLAUDE.md](CLAUDE.md)** - Comprehensive development guide
-- **[legacy/README.md](legacy/README.md)** - Migration information
-
-## 🧪 Testing
-
-### Instance Testing
-```bash
-# Launch instance with complete installation
-./launch-cockpit-instance.sh
-
-# Monitor bootstrap progress (SSH into instance)
-ssh -i ${KEY_NAME}.pem rocky@<instance-ip> 'sudo tail -f /var/log/user-data-bootstrap.log'
-
-# Verify services after completion
-./legacy/manage-instances.sh services
-```
+- **README-SSM-Architecture.md**: Comprehensive architecture documentation
+- **CLAUDE.md**: Development and project guidance
+- **.env.example**: Environment configuration template
 
 ## 🤝 Contributing
 
 1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Test your changes on an AWS Outpost instance
-4. Commit your changes (`git commit -m 'Add amazing feature'`)
-5. Push to the branch (`git push origin feature/amazing-feature`)
-6. Open a Pull Request
+2. Create a feature branch
+3. Test your changes thoroughly
+4. Submit a pull request
 
-## 📝 License
+## 📄 License
 
-This project is released into the public domain under The Unlicense - see the [LICENSE](LICENSE) file for details. You can do whatever you want with this code!
+This project is licensed under the MIT License - see the LICENSE file for details.
 
-## 🙏 Acknowledgments
+## ⭐ Features
 
-- [Cockpit Project](https://cockpit-project.org/) - Web-based server management interface
-- [45Drives](https://github.com/45Drives) - Third-party Cockpit modules
-- [AWS Systems Manager](https://aws.amazon.com/systems-manager/) - Automation platform
-
-## 🔧 Architecture Evolution
-
-This project has evolved from SSM-based modular deployment to a streamlined self-contained user-data approach. The current implementation provides complete Cockpit installation during instance bootstrap with no external dependencies. Legacy SSM components and utilities have been preserved in the `legacy/` directory for reference.
+- 🔄 **Idempotent Deployment**: Safe to re-run, automatic resume
+- 📊 **Real-time Monitoring**: AWS console integration + SNS notifications  
+- 🎯 **Phase-Specific Control**: Individual phase execution and retry
+- 🏗️ **Enterprise Architecture**: AWS SSM-based deployment pipeline
+- 📱 **Complete Web Management**: Full-featured Cockpit installation
+- 🚀 **One-Command Deploy**: Simple setup with comprehensive functionality
 
 ---
 
-**Need Help?** Check the [CLAUDE.md documentation](CLAUDE.md) or open an issue.
+**Ready to deploy?** Run `./launch-cockpit-instance.sh` and watch the magic happen! ✨

@@ -207,4 +207,4 @@ Potential improvements to the SSM architecture:
 - **Conditional Phases**: Skip phases based on instance type or configuration
 - **Rollback Capability**: Automatic rollback on critical phase failures
 - **Phase Dependencies**: Smart dependency management between phases
-- **Custom Phases**: Easy addition of user-defined installation phases
+- **Security Hardening**: Replace hard coded credentials with random passwords, make ssh access optional, etc.

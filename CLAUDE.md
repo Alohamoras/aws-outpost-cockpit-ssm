@@ -4,29 +4,24 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This project automates the deployment of Cockpit web console on AWS Outpost instances. It provides two deployment architectures: a self-contained user-data approach and a modern SSM multi-phase approach for better maintainability and error handling.
+This project automates the deployment of Cockpit web console on AWS Outpost instances using a modern **SSM multi-phase architecture**. It provides idempotent, resumable deployment with excellent error handling and AWS-native observability.
 
 ## Architecture
 
-The system supports two deployment architectures:
-
-### SSM Multi-Phase Architecture (RECOMMENDED)
-- **Main launcher**: `launch-cockpit-instance-ssm.sh` - Orchestrates SSM document execution
+### Smart Idempotent SSM Architecture
+- **Smart launcher**: `launch-cockpit-instance.sh` - Intelligent deployment with state detection and resume
+- **SSM orchestrator**: `launch-cockpit-instance-ssm.sh` - Full SSM multi-phase deployment
 - **Minimal bootstrap**: `user-data-minimal.sh` - Network readiness and SSM agent setup (40 lines)
-- **Phase documents**: Individual SSM documents for each installation phase
+- **Phase documents**: 5 focused SSM documents for deployment phases
 - **Instance management**: `legacy/manage-instances.sh` - Operations utilities
 
-### Legacy Self-Contained Architecture
-- **Main launcher**: `launch-cockpit-instance.sh` - Orchestrates the entire deployment
-- **Complete bootstrap**: `user-data-bootstrap.sh` - Full Cockpit installation during instance launch (378 lines)
-- **Instance management**: `legacy/manage-instances.sh` - Operations utilities
-
-### Key Components (Both Architectures)
+### Key Components
 - EC2 instance launch with Rocky Linux 9
-- IAM role and instance profile management
-- SNS notifications for installation progress
+- IAM role and instance profile management for SSM
+- SNS notifications for installation progress and phase completion
 - Elastic IP assignment and network configuration
 - Complete Cockpit installation with virtualization, containers, and monitoring
+- Idempotent deployment with automatic state detection and resume capability
 
 ## Environment Configuration
 
@@ -51,7 +46,28 @@ The system supports two deployment architectures:
 
 ### Launch New Instance
 
-#### SSM Multi-Phase Architecture (Recommended)
+#### Smart Idempotent Deployment (Primary Method)
+```bash
+# Smart deployment with automatic state detection
+./launch-cockpit-instance.sh
+
+# Check current deployment status
+./launch-cockpit-instance.sh --status
+
+# Resume from failure point
+./launch-cockpit-instance.sh --resume
+
+# Run specific phase
+./launch-cockpit-instance.sh --phase cockpit-core
+```
+The smart launcher will:
+- Detect existing instances and deployment state
+- Resume from the last successful phase automatically
+- Provide beautiful status reporting with progress tracking
+- Enable individual phase execution and retry
+- Handle errors gracefully with clear next steps
+
+#### Full SSM Multi-Phase Architecture
 ```bash
 ./launch-cockpit-instance-ssm.sh
 ```
@@ -63,18 +79,6 @@ The SSM launcher will:
 - Execute deployment phases sequentially via SSM documents
 - Provide better error handling and observability
 - Monitor progress through AWS console and SNS notifications
-
-#### Legacy Self-Contained Architecture
-```bash
-./launch-cockpit-instance.sh
-```
-The legacy launcher will:
-- Verify prerequisites (AWS CLI, SNS topic, SSH key)
-- Find latest Rocky Linux 9 AMI
-- Create IAM roles if needed
-- Launch instance with complete Cockpit installation via user-data
-- Monitor bootstrap progress via console logs (no SSH required)
-- Provide access URLs and login credentials
 
 ### Instance Management
 ```bash
@@ -115,24 +119,26 @@ ssh -i ${KEY_NAME}.pem rocky@$PUBLIC_IP 'systemctl status cockpit.socket'
 
 ```
 .
-├── launch-cockpit-instance-ssm.sh   # SSM multi-phase launcher (recommended)
-├── launch-cockpit-instance.sh       # Legacy self-contained launcher
-├── user-data-minimal.sh             # Minimal bootstrap (SSM architecture)
-├── user-data-bootstrap.sh           # Complete bootstrap (legacy architecture)
+├── launch-cockpit-instance.sh       # Smart idempotent launcher (PRIMARY)
+├── launch-cockpit-instance-ssm.sh   # SSM multi-phase orchestrator
+├── user-data-minimal.sh             # Minimal bootstrap (network + SSM agent)
 ├── ssm-documents/                   # SSM deployment phases
 │   ├── outpost-system-updates.json
 │   ├── outpost-cockpit-core.json
 │   ├── outpost-cockpit-extensions.json
 │   ├── outpost-cockpit-thirdparty.json
 │   └── outpost-cockpit-config.json
-├── README-SSM-Architecture.md      # SSM architecture documentation
-├── .env.example                    # Environment template
-├── .env                           # Local configuration (gitignored)
-├── ${KEY_NAME}.pem               # SSH private key (user-provided, gitignored)
-├── .last-instance-id             # Tracks most recent instance
-└── legacy/                       # Legacy scripts directory
-    ├── README.md                 # Legacy documentation
-    └── manage-instances.sh       # Instance operations utility
+├── README.md                        # Primary documentation (SSM focused)
+├── README-SSM-Architecture.md       # Detailed architecture documentation
+├── .env.example                     # Environment template
+├── .env                            # Local configuration (gitignored)
+├── ${KEY_NAME}.pem                 # SSH private key (user-provided, gitignored)
+├── .last-instance-id               # Tracks most recent instance state
+└── legacy/                         # Legacy scripts and utilities
+    ├── launch-cockpit-instance-legacy.sh   # Original monolithic launcher
+    ├── user-data-bootstrap-legacy.sh       # Original bootstrap (preserved)
+    ├── manage-instances.sh                  # Instance operations utility
+    └── README.md                            # Legacy documentation
 ```
 
 ## Development Notes
