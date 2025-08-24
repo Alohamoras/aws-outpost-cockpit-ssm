@@ -128,8 +128,7 @@ ssh -i ${KEY_NAME}.pem rocky@$PUBLIC_IP 'systemctl status cockpit.socket'
 │   ├── outpost-cockpit-extensions.json
 │   ├── outpost-cockpit-thirdparty.json
 │   └── outpost-cockpit-config.json
-├── README.md                        # Primary documentation (SSM focused)
-├── README-SSM-Architecture.md       # Detailed architecture documentation
+├── README.md                        # Comprehensive documentation (SSM focused)
 ├── .env.example                     # Environment template
 ├── .env                            # Local configuration (gitignored)
 ├── ${KEY_NAME}.pem                 # SSH private key (user-provided, gitignored)
