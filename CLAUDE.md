@@ -40,6 +40,14 @@ This project automates the deployment of Cockpit web console on AWS Outpost inst
 - Key permissions are automatically set to 400 during execution
 - **Security**: SSH keys are gitignored and should never be committed to the repository
 
+## Documentation Structure
+
+The project documentation is organized into focused documents:
+- **README.md** - Quick start and basic usage (entry point for new users)
+- **USAGE.md** - Comprehensive operations guide with commands, troubleshooting, and monitoring
+- **ARCHITECTURE.md** - Technical deep-dive into SSM deployment architecture
+- **legacy/README.md** - Legacy architecture documentation
+
 ## Common Commands
 
 ### Launch New Instance
@@ -126,7 +134,9 @@ ssh -i ${KEY_NAME}.pem rocky@$PUBLIC_IP 'systemctl status cockpit.socket'
 │   ├── outpost-cockpit-extensions.json
 │   ├── outpost-cockpit-thirdparty.json
 │   └── outpost-cockpit-config.json
-├── README.md                        # Comprehensive documentation (SSM focused)
+├── README.md                        # Quick start guide (entry point)
+├── USAGE.md                         # Comprehensive operations guide
+├── ARCHITECTURE.md                  # Technical architecture documentation
 ├── .env.example                     # Environment template
 ├── .env                            # Local configuration (gitignored)
 ├── ${KEY_NAME}.pem                 # SSH private key (user-provided, gitignored)
