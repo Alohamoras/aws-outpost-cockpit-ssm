@@ -17,49 +17,14 @@ NETWORK_CHECK_INTERVAL=60  # Check every 1 minute
 echo "Bootstrap configured for AWS Outpost bare metal instances"
 echo "Network attempts: $MAX_NETWORK_ATTEMPTS, Check interval: ${NETWORK_CHECK_INTERVAL}s (40 minutes total)"
 
-# Create SNS topic file early (value will be substituted by launch script)
-echo "{{SNS_TOPIC_ARN}}" > /tmp/sns-topic-arn.txt
-echo "SNS topic ARN configured for notifications"
+# SNS functionality removed from legacy version
 
-# SNS notification function (simplified, reliable)
-send_bootstrap_notification() {
+# SNS notification function removed from legacy version
+# Logging function for bootstrap status
+log_bootstrap_status() {
     local status="$1"
     local message="$2"
-    
-    # Get SNS topic from file (created early in bootstrap with launch script substitution)
-    local sns_topic=""
-    if [[ -f /tmp/sns-topic-arn.txt ]]; then
-        sns_topic=$(cat /tmp/sns-topic-arn.txt 2>/dev/null | tr -d '\n')
-    fi
-    
-    # Fallback to environment variable if file doesn't exist or is empty
-    if [[ -z "$sns_topic" && -n "$SNS_TOPIC_ARN" ]]; then
-        sns_topic="$SNS_TOPIC_ARN"
-    fi
-    
-    # Send notification if we have a valid topic ARN and AWS CLI
-    if [[ -n "$sns_topic" && "$sns_topic" != "None" && "$sns_topic" != "{{SNS_TOPIC_ARN}}" ]]; then
-        # Check if AWS CLI is available (may not be installed yet in early bootstrap)
-        if command -v aws >/dev/null 2>&1; then
-            # Use region fallback if not set yet (early bootstrap calls)
-            local region="${REGION:-us-east-1}"
-            echo "📧 Sending SNS notification: $status"
-            
-            if aws sns publish \
-                --region "$region" \
-                --topic-arn "$sns_topic" \
-                --subject "Bootstrap $status - ${INSTANCE_ID:-UNKNOWN}" \
-                --message "$message" 2>&1; then
-                echo "✅ SNS notification sent successfully"
-            else
-                echo "⚠️ SNS notification failed (AWS CLI error above)"
-            fi
-        else
-            echo "ℹ️ SNS notification skipped - AWS CLI not available yet"
-        fi
-    else
-        echo "ℹ️ SNS notification skipped - no valid topic configured"
-    fi
+    echo "📋 BOOTSTRAP STATUS: $status - $message"
 }
 
 # PHASE 1: NETWORK READINESS (CRITICAL - MUST COME FIRST)
@@ -147,7 +112,7 @@ else
     echo "✅ System packages updated successfully"
 fi
 
-# AWS CLI Installation (required for SNS notifications and SSM verification - install even if system updates failed)
+# AWS CLI Installation (required for SSM verification - install even if system updates failed)
 echo "Installing AWS CLI..."
 AWS_CLI_INSTALLED=false
 
@@ -159,7 +124,7 @@ elif retry_dnf install -y python3-pip && pip3 install awscli --break-system-pack
     echo "✅ AWS CLI installed via pip3"
     AWS_CLI_INSTALLED=true
 else
-    echo "⚠️ AWS CLI installation failed - SNS notifications and SSM verification will be skipped"
+    echo "⚠️ AWS CLI installation failed - SSM verification will be skipped"
 fi
 
 # Verify AWS CLI installation
@@ -171,12 +136,12 @@ else
     AWS_CLI_INSTALLED=false
 fi
 
-# Now send notifications after AWS CLI is available
-send_bootstrap_notification "NETWORK_READY" "🌐 Network connectivity established on instance $INSTANCE_ID after $network_attempt attempts. Ready for operations."
+# Log network readiness status
+log_bootstrap_status "NETWORK_READY" "🌐 Network connectivity established on instance $INSTANCE_ID after $network_attempt attempts. Ready for operations."
 
-# Handle system update failure now that we can send notifications
+# Handle system update failure
 if [ "$SYSTEM_UPDATE_FAILED" = true ]; then
-    send_bootstrap_notification "FAILED" "System package update failed on instance $INSTANCE_ID during bootstrap"
+    log_bootstrap_status "FAILED" "System package update failed on instance $INSTANCE_ID during bootstrap"
     exit 1
 fi
 
@@ -194,7 +159,7 @@ if retry_dnf install -y "$SSM_URL"; then
     SSM_INSTALLED=true
 else
     echo "⚠️ SSM Agent installation failed - continuing with Cockpit installation"
-    send_bootstrap_notification "SSM_FAILED" "SSM Agent installation failed on instance $INSTANCE_ID, but continuing with Cockpit deployment"
+    log_bootstrap_status "SSM_FAILED" "SSM Agent installation failed on instance $INSTANCE_ID, but continuing with Cockpit deployment"
 fi
 
 # Enable and start SSM Agent (only if installation succeeded)
@@ -238,13 +203,13 @@ fi
 echo ""
 echo "=== PHASE 6: COMPLETE COCKPIT INSTALLATION ==="
 echo "$(date): Starting complete Cockpit installation..."
-send_bootstrap_notification "COCKPIT_STARTED" "🚀 Starting complete Cockpit installation on instance $INSTANCE_ID"
+log_bootstrap_status "COCKPIT_STARTED" "🚀 Starting complete Cockpit installation on instance $INSTANCE_ID"
 
 # Core Cockpit installation
 echo "Installing core Cockpit packages..."
 if ! retry_dnf install -y cockpit cockpit-system cockpit-ws cockpit-bridge cockpit-networkmanager cockpit-storaged cockpit-packagekit cockpit-sosreport; then
     echo "❌ Core Cockpit installation failed"
-    send_bootstrap_notification "FAILED" "Core Cockpit installation failed on instance $INSTANCE_ID"
+    log_bootstrap_status "FAILED" "Core Cockpit installation failed on instance $INSTANCE_ID"
     exit 1
 fi
 
@@ -328,10 +293,10 @@ PUBLIC_IP=$(curl -s --max-time 10 http://169.254.169.254/latest/meta-data/public
 
 if systemctl is-active --quiet cockpit.socket; then
     echo "✅ Cockpit installation completed successfully"
-    send_bootstrap_notification "COCKPIT_SUCCESS" "🎉 Cockpit deployment completed! Instance: $INSTANCE_ID, Access: https://$PUBLIC_IP:9090, Users: admin/rocky (password: Cockpit123)"
+    log_bootstrap_status "COCKPIT_SUCCESS" "🎉 Cockpit deployment completed! Instance: $INSTANCE_ID, Access: https://$PUBLIC_IP:9090, Users: admin/rocky (password: Cockpit123)"
 else
     echo "❌ Cockpit installation failed - service not active"
-    send_bootstrap_notification "FAILED" "Cockpit installation failed - service not active on instance $INSTANCE_ID"
+    log_bootstrap_status "FAILED" "Cockpit installation failed - service not active on instance $INSTANCE_ID"
     exit 1
 fi
 
@@ -346,9 +311,9 @@ echo "$INSTANCE_ID" > /tmp/instance-id
 echo "$REGION" > /tmp/instance-region
 echo "$PUBLIC_IP" > /tmp/instance-public-ip
 
-# Final notification
+# Final status log
 echo "$(date): Instance $INSTANCE_ID bootstrap and Cockpit installation completed successfully"
-send_bootstrap_notification "SUCCESS" "🚀 Complete deployment finished on instance $INSTANCE_ID! Cockpit accessible at https://$PUBLIC_IP:9090"
+log_bootstrap_status "SUCCESS" "🚀 Complete deployment finished on instance $INSTANCE_ID! Cockpit accessible at https://$PUBLIC_IP:9090"
 
 echo ""
 echo "=============================================="
@@ -371,7 +336,7 @@ fi
 if command -v aws >/dev/null 2>&1; then
     echo "AWS CLI: ✅ Available ($(aws --version 2>&1 | head -n1 | cut -d' ' -f1-2))"
 else
-    echo "AWS CLI: ⚠️ Not available (SNS notifications disabled)"
+    echo "AWS CLI: ⚠️ Not available"
 fi
 echo "Completion Time: $(date)"
 echo "Network Attempts: $network_attempt/$MAX_NETWORK_ATTEMPTS"

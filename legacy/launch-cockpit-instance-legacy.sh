@@ -21,8 +21,7 @@ REGION="${REGION:-us-east-1}"
 
 # SSM_MAIN_DOCUMENT removed - not needed
 
-# SNS Topic ARN for notifications (required)
-SNS_TOPIC_ARN="${SNS_TOPIC_ARN}"
+# SNS Topic ARN removed from legacy version
 
 # Storage configuration (optional)
 CONFIGURE_STORAGE="${CONFIGURE_STORAGE:-false}"
@@ -63,20 +62,6 @@ check_prerequisites() {
         exit 1
     fi
     
-    # Check SNS Topic ARN is provided
-    if [[ -z "$SNS_TOPIC_ARN" ]]; then
-        error "SNS_TOPIC_ARN environment variable is required for notifications."
-        error "Set it with: export SNS_TOPIC_ARN=\"arn:aws:sns:region:account:topic-name\""
-        exit 1
-    fi
-    
-    # Validate SNS ARN format
-    if [[ ! "$SNS_TOPIC_ARN" =~ ^arn:aws:sns:[^:]+:[^:]+:[^:]+$ ]]; then
-        error "Invalid SNS Topic ARN format: $SNS_TOPIC_ARN"
-        error "Expected format: arn:aws:sns:region:account-id:topic-name"
-        exit 1
-    fi
-    
     # Check key file exists
     KEY_FILE="${KEY_NAME}.pem"
     if [[ ! -f "$KEY_FILE" ]]; then
@@ -94,7 +79,6 @@ check_prerequisites() {
     chmod 400 "$KEY_FILE"
     
     success "Prerequisites check passed"
-    success "SNS notifications will be sent to: $SNS_TOPIC_ARN"
 }
 
 # No SSM document verification needed - everything in user-data
@@ -166,21 +150,6 @@ ensure_ssm_instance_profile() {
                 --role-name "AmazonSSMManagedInstanceCore" \
                 --policy-arn "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore" >/dev/null
             
-            # Create and attach SNS policy for notifications
-            aws iam put-role-policy \
-                --role-name "AmazonSSMManagedInstanceCore" \
-                --policy-name "CockpitSNSNotifications" \
-                --policy-document "{
-                    \"Version\": \"2012-10-17\",
-                    \"Statement\": [
-                        {
-                            \"Effect\": \"Allow\",
-                            \"Action\": \"sns:Publish\",
-                            \"Resource\": \"$SNS_TOPIC_ARN\"
-                        }
-                    ]
-                }" >/dev/null
-            
             # Add role to instance profile
             aws iam add-role-to-instance-profile \
                 --instance-profile-name "CockpitSSMInstanceProfile" \
@@ -201,19 +170,16 @@ ensure_ssm_instance_profile() {
 launch_instance() {
     log "Launching EC2 instance..."
     
-    # Load user-data from bootstrap script file
-    if [[ ! -f "user-data-bootstrap.sh" ]]; then
-        error "user-data-bootstrap.sh file not found"
+    # Load user-data from legacy bootstrap script file
+    if [[ ! -f "legacy/user-data-bootstrap-legacy.sh" ]]; then
+        error "legacy/user-data-bootstrap-legacy.sh file not found"
         exit 1
     fi
     
-    # Prepare user-data with SNS topic ARN substitution
-    local user_data="$(cat user-data-bootstrap.sh)"
+    # Load user-data without SNS substitution
+    local user_data="$(cat legacy/user-data-bootstrap-legacy.sh)"
     
-    # Replace the placeholder with actual SNS topic ARN from .env
-    user_data="${user_data//\{\{SNS_TOPIC_ARN\}\}/$SNS_TOPIC_ARN}"
-    
-    log "SNS topic ARN configured for bootstrap notifications"
+    log "User-data prepared for bootstrap (legacy version without SNS)"
     
     INSTANCE_ID=$(aws ec2 run-instances \
         --region "$REGION" \
@@ -225,7 +191,7 @@ launch_instance() {
         --iam-instance-profile "Name=CockpitSSMInstanceProfile" \
         --user-data "$user_data" \
         --placement "AvailabilityZone=$(aws ec2 describe-subnets --region $REGION --subnet-ids $SUBNET_ID --query 'Subnets[0].AvailabilityZone' --output text)" \
-        --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=Cockpit-Outpost-Server},{Key=Purpose,Value=Cockpit-WebConsole},{Key=CockpitNotificationTopic,Value=$SNS_TOPIC_ARN},{Key=CockpitAutomation,Value=true}]" \
+        --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=Cockpit-Outpost-Server},{Key=Purpose,Value=Cockpit-WebConsole},{Key=CockpitAutomation,Value=true}]" \
         --query 'Instances[0].InstanceId' \
         --output text)
     

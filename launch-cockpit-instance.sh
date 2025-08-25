@@ -316,10 +316,6 @@ check_prerequisites() {
     log "Running pre-flight checks..."
     
     # Check required environment variables
-    if [[ -z "$SNS_TOPIC_ARN" ]]; then
-        error "SNS_TOPIC_ARN is required but not set in .env file"
-        exit 1
-    fi
     
     # Check AWS CLI
     if ! command -v aws >/dev/null 2>&1; then
@@ -455,20 +451,6 @@ ensure_ssm_instance_profile() {
                 --role-name "AmazonSSMManagedInstanceCore" \
                 --policy-arn "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore" >/dev/null
             
-            # Create and attach SNS policy for notifications
-            aws iam put-role-policy \
-                --role-name "AmazonSSMManagedInstanceCore" \
-                --policy-name "CockpitSNSNotifications" \
-                --policy-document "{
-                    \"Version\": \"2012-10-17\",
-                    \"Statement\": [
-                        {
-                            \"Effect\": \"Allow\",
-                            \"Action\": \"sns:Publish\",
-                            \"Resource\": \"$SNS_TOPIC_ARN\"
-                        }
-                    ]
-                }" >/dev/null
             
             # Add role to instance profile
             aws iam add-role-to-instance-profile \
@@ -496,13 +478,8 @@ launch_instance() {
         exit 1
     fi
     
-    # Prepare user-data with SNS topic ARN substitution
+    # Prepare user-data
     local user_data="$(cat user-data-minimal.sh)"
-    
-    # Replace the placeholder with actual SNS topic ARN from .env
-    user_data="${user_data//\{\{SNS_TOPIC_ARN\}\}/$SNS_TOPIC_ARN}"
-    
-    log "SNS topic ARN configured for bootstrap notifications"
     
     INSTANCE_ID=$(aws ec2 run-instances \
         --region "$REGION" \
@@ -514,7 +491,7 @@ launch_instance() {
         --iam-instance-profile "Name=CockpitSSMInstanceProfile" \
         --user-data "$user_data" \
         --placement "AvailabilityZone=$(aws ec2 describe-subnets --region $REGION --subnet-ids $SUBNET_ID --query 'Subnets[0].AvailabilityZone' --output text)" \
-        --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=Cockpit-Outpost-Server-SSM},{Key=Purpose,Value=Cockpit-WebConsole},{Key=CockpitNotificationTopic,Value=$SNS_TOPIC_ARN},{Key=CockpitAutomation,Value=SSM-MultiPhase}]" \
+        --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=Cockpit-Outpost-Server-SSM},{Key=Purpose,Value=Cockpit-WebConsole},{Key=CockpitAutomation,Value=SSM-MultiPhase}]" \
         --query 'Instances[0].InstanceId' \
         --output text)
     
@@ -615,7 +592,7 @@ execute_ssm_document() {
         --region "$REGION" \
         --document-name "$document_name" \
         --instance-ids "$INSTANCE_ID" \
-        --parameters "snsTopicArn=$SNS_TOPIC_ARN,instanceId=$INSTANCE_ID" \
+        --parameters "instanceId=$INSTANCE_ID" \
         --query 'Command.CommandId' \
         --output text)
     

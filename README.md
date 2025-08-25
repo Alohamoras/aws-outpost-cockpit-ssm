@@ -7,7 +7,6 @@ Automated deployment of [Cockpit](https://cockpit-project.org/) web console on A
 ### Prerequisites
 - AWS CLI installed and configured
 - AWS Outpost with EC2 instances
-- SNS topic for notifications (required for progress updates)
 - SSH key pair for instance access
 
 ### 1. Setup Configuration
@@ -27,7 +26,6 @@ OUTPOST_ID=your-outpost-id
 SUBNET_ID=your-subnet-id
 SECURITY_GROUP_ID=your-security-group-id
 KEY_NAME=your-key-name
-SNS_TOPIC_ARN=your-sns-topic-arn
 REGION=us-east-1
 ```
 
@@ -125,7 +123,7 @@ Executed sequentially by the launcher via AWS Systems Manager:
 - Individual phase retry without full restart
 
 #### ✅ **Enhanced Observability** 
-- Real-time progress via AWS console and SNS
+- Real-time progress via AWS console
 - Phase-specific logs for targeted troubleshooting
 - Built-in progress tracking and status reporting
 
@@ -188,7 +186,6 @@ When RAID5 array is available, creates optimized logical volumes:
 - **Graceful Fallback**: If <3 drives available, only extends boot drive
 - **Non-Critical**: Storage configuration failure doesn't stop Cockpit deployment
 - **Idempotent**: Safe to re-run, detects existing configuration
-- **Progress Notifications**: SNS updates for storage configuration progress
 
 ## 📊 Deployment Status & Monitoring
 
@@ -292,8 +289,7 @@ Each phase creates its own log file on the instance:
 aws ssm send-command \
   --region $REGION \
   --document-name "outpost-cockpit-core" \
-  --instance-ids $INSTANCE_ID \
-  --parameters "snsTopicArn=$SNS_TOPIC_ARN,instanceId=$INSTANCE_ID"
+  --instance-ids $INSTANCE_ID
 ```
 
 ## 🔧 Troubleshooting
@@ -332,7 +328,6 @@ aws ssm get-command-invocation \
 #### Instance Not Accessible
 - Verify security group allows port 9090 (HTTPS) and 22 (SSH)
 - Check if public IP was assigned correctly
-- Ensure SNS topic ARN is valid for notifications
 - Confirm instance is in 'running' state
 
 #### SSM Agent Issues
@@ -414,7 +409,7 @@ ssh -i ${KEY_NAME}.pem rocky@$PUBLIC_IP 'sudo systemctl restart cockpit.socket'
 | **Observability** | Single log file | Phase-specific logs + AWS console |
 | **Maintainability** | 378-line monolith | 5 focused documents |
 | **Testing** | Full deployment required | Individual phase testing |
-| **Debugging** | SSH required for logs | AWS console + SNS notifications |
+| **Debugging** | SSH required for logs | AWS console logs |
 | **Idempotency** | None | Full resume capability |
 
 ## 🔐 Security Considerations
@@ -447,8 +442,7 @@ The deployment requires these IAM permissions:
                 "ssm:UpdateDocument", 
                 "ssm:SendCommand",
                 "ssm:GetCommandInvocation",
-                "ssm:DescribeInstanceInformation",
-                "sns:Publish"
+                "ssm:DescribeInstanceInformation"
             ],
             "Resource": "*"
         }
@@ -479,7 +473,7 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 ## ⭐ Features
 
 - 🔄 **Idempotent Deployment**: Safe to re-run, automatic resume from failures
-- 📊 **Real-time Monitoring**: AWS console integration + SNS notifications  
+- 📊 **Real-time Monitoring**: AWS console integration  
 - 🎯 **Phase-Specific Control**: Individual phase execution and retry
 - 🏗️ **Enterprise Architecture**: AWS SSM-based deployment pipeline
 - 📱 **Complete Web Management**: Full-featured Cockpit installation
@@ -487,10 +481,17 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 - 🛡️ **Resilient Error Handling**: Individual phase failures don't stop deployment
 - 📈 **Beautiful Status Display**: Clear progress tracking with next steps
 - 🔧 **Granular Control**: Run, retry, or skip individual deployment phases
-- ☁️ **AWS-Native**: Leverages SSM, SNS, and EC2 for enterprise-grade deployment
+- ☁️ **AWS-Native**: Leverages SSM and EC2 for enterprise-grade deployment
 
 ---
 
 **Ready to deploy?** Run `./launch-cockpit-instance.sh` and watch the magic happen! ✨
 
 **Need help?** Use `./launch-cockpit-instance.sh --help` for all available options.
+
+
+To Do:
+- Fix license description
+- Remove SNS or fix it (done)
+- Clean up readme and shorten
+- Check ...

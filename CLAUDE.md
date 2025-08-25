@@ -18,7 +18,6 @@ This project automates the deployment of Cockpit web console on AWS Outpost inst
 ### Key Components
 - EC2 instance launch with Rocky Linux 9
 - IAM role and instance profile management for SSM
-- SNS notifications for installation progress and phase completion
 - Elastic IP assignment and network configuration
 - Complete Cockpit installation with virtualization, containers, and monitoring
 - Idempotent deployment with automatic state detection and resume capability
@@ -32,7 +31,6 @@ This project automates the deployment of Cockpit web console on AWS Outpost inst
    - `SUBNET_ID` - Target subnet for instances
    - `SECURITY_GROUP_ID` - Security group allowing port 9090
    - `KEY_NAME` - EC2 key pair name
-   - `SNS_TOPIC_ARN` - SNS topic for notifications (required)
    - `REGION` - AWS region (default: us-east-1)
 
 ### SSH Key
@@ -78,7 +76,7 @@ The SSM launcher will:
 - Launch instance with minimal bootstrap (network + SSM agent only)
 - Execute deployment phases sequentially via SSM documents
 - Provide better error handling and observability
-- Monitor progress through AWS console and SNS notifications
+- Monitor progress through AWS console
 
 ### Instance Management
 ```bash
@@ -159,7 +157,6 @@ ssh -i ${KEY_NAME}.pem rocky@$PUBLIC_IP 'systemctl status cockpit.socket'
 ### Error Handling
 - All scripts use `set -e` for fail-fast behavior
 - Comprehensive logging with color-coded output
-- SNS notifications for bootstrap and installation progress
 - Robust retry mechanisms for network operations and package installations
 
 ### Bootstrap Architecture Details
