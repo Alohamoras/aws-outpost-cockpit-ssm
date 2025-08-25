@@ -56,10 +56,16 @@ chmod 400 ${KEY_NAME}.pem
 ./launch-cockpit-instance.sh --phase cockpit-core
 ```
 
-#### Full SSM Multi-Phase Deployment
+#### Alternative Command Line Options
 ```bash
-# Complete deployment with AWS SSM orchestration
-./launch-cockpit-instance-ssm.sh
+# Force new deployment (terminates existing)
+./launch-cockpit-instance.sh --force-new
+
+# List all available phases
+./launch-cockpit-instance.sh --list-phases
+
+# Show help with all options
+./launch-cockpit-instance.sh --help
 ```
 
 ### 4. Access Cockpit
@@ -71,7 +77,7 @@ After deployment completes (~30-45 minutes), access Cockpit at:
 ## 🏗️ Architecture
 
 ### SSM Multi-Phase Deployment
-The deployment uses AWS Systems Manager for reliable, observable deployment across 6 phases:
+The deployment uses AWS Systems Manager for reliable, observable deployment across 7 phases:
 
 #### Phase 1: Minimal User-Data Bootstrap
 - **File**: `user-data-minimal.sh` (~40 lines vs 378 in legacy)
@@ -79,28 +85,35 @@ The deployment uses AWS Systems Manager for reliable, observable deployment acro
 - **Duration**: ~5-10 minutes
 - **Critical**: Must complete successfully for SSM phases to work
 
-#### Phase 2-6: SSM Document Execution
+#### Phase 2-7: SSM Document Execution
 Executed sequentially by the launcher via AWS Systems Manager:
 
 1. **System Updates** (`outpost-system-updates.json`)
    - System package updates and AWS CLI verification
    - Duration: ~10-15 minutes
 
-2. **Core Cockpit** (`outpost-cockpit-core.json`)
+2. **Storage Configuration** (`outpost-storage-config.json`)
+   - RAID5 setup for data drives (3+ drives required)
+   - Root OS volume extension using available space
+   - LVM volume creation for VMs, containers, and storage
+   - Duration: ~5-15 minutes
+   - Non-critical: Deployment continues if this fails
+
+3. **Core Cockpit** (`outpost-cockpit-core.json`)
    - Core Cockpit packages and basic configuration
    - Duration: ~5-10 minutes
 
-3. **Cockpit Extensions** (`outpost-cockpit-extensions.json`)
+4. **Cockpit Extensions** (`outpost-cockpit-extensions.json`)
    - Virtualization, containers, and monitoring packages
    - Duration: ~15-20 minutes
    - Non-critical: Deployment continues if this fails
 
-4. **Third-party Extensions** (`outpost-cockpit-thirdparty.json`)
+5. **Third-party Extensions** (`outpost-cockpit-thirdparty.json`)
    - 45Drives extensions for enhanced functionality
    - Duration: ~5-10 minutes
    - Non-critical: Deployment continues if this fails
 
-5. **Final Configuration** (`outpost-cockpit-config.json`)
+6. **Final Configuration** (`outpost-cockpit-config.json`)
    - User accounts, final settings, and verification
    - Duration: ~2-5 minutes
 
@@ -147,6 +160,36 @@ Executed sequentially by the launcher via AWS Systems Manager:
 - **Identity Management**: User and group management
 - **System Reports**: Comprehensive system reporting
 
+### 💾 Storage Configuration
+
+The storage configuration phase automatically optimizes storage for Cockpit workloads:
+
+#### Boot Drive Extension
+- **Smart Detection**: Automatically detects boot drive (supports NVMe and SATA)
+- **LVM Extension**: Extends existing Rocky Linux volume group with available space
+- **Non-disruptive**: Extends root filesystem without interrupting operations
+- **Minimum Threshold**: Only extends if >10GB free space available
+
+#### RAID5 Data Array (3+ drives)
+- **Automatic Detection**: Identifies unused data drives (excludes boot drive)
+- **RAID5 Creation**: Creates fault-tolerant array for enterprise storage
+- **LVM Integration**: Sets up LVM volume group "data" on RAID array
+- **Safety Checks**: Prevents data loss by excluding drives with existing data
+
+#### Workload-Optimized Volumes
+When RAID5 array is available, creates optimized logical volumes:
+- **VM Storage** (`/var/lib/libvirt`): 40% of available space for virtual machines
+- **Container Storage** (`/var/lib/containers`): 30% of available space for Podman containers  
+- **General Storage** (`/storage`): 25% of available space for file sharing and data
+- **XFS Filesystems**: High-performance filesystems optimized for large files
+- **Automatic Mounting**: Configured in `/etc/fstab` for persistent mounts
+
+#### Smart Behavior
+- **Graceful Fallback**: If <3 drives available, only extends boot drive
+- **Non-Critical**: Storage configuration failure doesn't stop Cockpit deployment
+- **Idempotent**: Safe to re-run, detects existing configuration
+- **Progress Notifications**: SNS updates for storage configuration progress
+
 ## 📊 Deployment Status & Monitoring
 
 ### Beautiful Status Display
@@ -169,6 +212,7 @@ Phase Status:
 ├────────────────────────────────────┼──────────────┤
 │ Minimal Bootstrap                  │ ✅ Complete  │
 │ System Updates                     │ ✅ Complete  │
+│ Storage Configuration              │ ✅ Complete  │
 │ Core Cockpit Installation          │ ✅ Complete  │
 │ Cockpit Extensions                 │ ⏸️  Pending   │
 │ Third-party Extensions             │ ⏸️  Pending   │
@@ -330,8 +374,7 @@ ssh -i ${KEY_NAME}.pem rocky@$PUBLIC_IP 'sudo systemctl restart cockpit.socket'
 
 ```
 .
-├── launch-cockpit-instance.sh       # Smart idempotent launcher (PRIMARY)
-├── launch-cockpit-instance-ssm.sh   # SSM multi-phase orchestrator
+├── launch-cockpit-instance.sh       # Complete SSM multi-phase launcher
 ├── user-data-minimal.sh             # Minimal bootstrap (network + SSM agent)
 ├── ssm-documents/                   # SSM deployment phases
 │   ├── outpost-system-updates.json
