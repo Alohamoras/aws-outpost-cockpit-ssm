@@ -124,8 +124,7 @@ add_ip_to_sg() {
         --group-id "$SG_ID" \
         --protocol "$protocol" \
         --port "$port" \
-        --cidr "$CURRENT_IP/32" \
-        --source-group-name "Current IP Access - $(date '+%Y-%m-%d %H:%M')"
+        --cidr "$CURRENT_IP/32"
     
     if [ $? -eq 0 ]; then
         log $GREEN "✓ Successfully added $CURRENT_IP/32 for port $port"
