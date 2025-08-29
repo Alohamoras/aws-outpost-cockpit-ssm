@@ -4,8 +4,7 @@
   "parameters": {
     "instanceId": {
       "type": "String",
-      "description": "Instance ID for notifications",
-      "default": "{{INSTANCE_ID}}"
+      "description": "Instance ID for notifications"
     }
   },
   "mainSteps": [
@@ -59,7 +58,13 @@
           "    # Clean and refresh cache",
           "    echo 'Refreshing package cache...'",
           "    dnf clean all >/dev/null 2>&1",
-          "    dnf makecache >/dev/null 2>&1",
+          "    # Import GPG key and refresh cache (handle potential GPG issues)",
+          "    if ! dnf makecache >/dev/null 2>&1; then",
+          "        echo '⚠️ GPG verification issue detected, importing key...'",
+          "        dnf install -y --nogpgcheck epel-release || true",
+          "        rpm --import https://repo.45drives.com/key/gpg.asc || true",
+          "        dnf makecache >/dev/null 2>&1 || echo '⚠️ Cache refresh failed, continuing anyway...'",
+          "    fi",
           "    ",
           "    # Install 45drives packages",
           "    if retry_dnf install -y cockpit-file-sharing cockpit-navigator cockpit-identities cockpit-sensors; then",

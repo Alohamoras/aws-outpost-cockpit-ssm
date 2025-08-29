@@ -4,8 +4,7 @@
   "parameters": {
     "instanceId": {
       "type": "String",
-      "description": "Instance ID for notifications",
-      "default": "{{INSTANCE_ID}}"
+      "description": "Instance ID for notifications"
     }
   },
   "mainSteps": [
