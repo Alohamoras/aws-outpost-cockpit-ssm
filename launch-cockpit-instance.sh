@@ -20,6 +20,12 @@ REGION="${REGION:-us-east-1}"
 SNS_TOPIC_ARN="${SNS_TOPIC_ARN}"
 KEY_FILE="${KEY_NAME}.pem"
 
+# LNI Configuration
+ENABLE_LNI="${ENABLE_LNI:-false}"
+LNI_COUNT="${LNI_COUNT:-1}"
+LNI_DHCP_ENABLED="${LNI_DHCP_ENABLED:-true}"
+LNI_STATIC_IPS="${LNI_STATIC_IPS:-}"
+
 # Deployment phases in order
 PHASES=(
     "bootstrap:Minimal Bootstrap"
@@ -27,6 +33,7 @@ PHASES=(
     "storage-config:Storage Configuration"
     "cockpit-core:Core Cockpit Installation"
     "cockpit-extensions:Cockpit Extensions"
+    "lni-config:LNI Configuration"
     "cockpit-thirdparty:Third-party Extensions"  
     "cockpit-config:Final Configuration"
 )
@@ -38,6 +45,7 @@ get_ssm_doc() {
         "storage-config") echo "outpost-storage-config" ;;
         "cockpit-core") echo "outpost-cockpit-core" ;;
         "cockpit-extensions") echo "outpost-cockpit-extensions" ;;
+        "lni-config") echo "outpost-lni-config" ;;
         "cockpit-thirdparty") echo "outpost-cockpit-thirdparty" ;;
         "cockpit-config") echo "outpost-cockpit-config" ;;
         *) echo "" ;;
@@ -78,6 +86,7 @@ PHASES:
     storage-config         Storage configuration (RAID5 + root extension)
     cockpit-core          Core Cockpit installation
     cockpit-extensions    Virtualization, containers, monitoring
+    lni-config            Local Network Interface configuration
     cockpit-thirdparty    45Drives extensions
     cockpit-config        Final configuration
 
@@ -349,6 +358,7 @@ create_ssm_documents() {
         "outpost-storage-config"
         "outpost-cockpit-core"
         "outpost-cockpit-extensions"
+        "outpost-lni-config"
         "outpost-cockpit-thirdparty"
         "outpost-cockpit-config"
     )
@@ -587,12 +597,18 @@ execute_ssm_document() {
     
     log "🚀 Executing $phase_desc..."
     
+    # Build parameters based on document type
+    local parameters="instanceId=$INSTANCE_ID"
+    if [[ "$document_name" == "outpost-lni-config" ]]; then
+        parameters="$parameters,enableLni=$ENABLE_LNI,lniCount=$LNI_COUNT,dhcpEnabled=$LNI_DHCP_ENABLED,staticIps=$LNI_STATIC_IPS,region=$REGION,subnetId=$SUBNET_ID"
+    fi
+    
     # Start SSM command
     COMMAND_ID=$(aws ssm send-command \
         --region "$REGION" \
         --document-name "$document_name" \
         --instance-ids "$INSTANCE_ID" \
-        --parameters "instanceId=$INSTANCE_ID" \
+        --parameters "$parameters" \
         --query 'Command.CommandId' \
         --output text)
     
@@ -698,12 +714,21 @@ execute_deployment_phases() {
         warning "Cockpit extensions installation had issues - continuing..."
     fi
     
-    # Phase 5: Third-party Extensions (non-critical)
+    # Phase 5: LNI Configuration (optional)
+    if [[ "$ENABLE_LNI" == "true" ]]; then
+        if ! execute_ssm_phase "lni-config" "LNI Configuration"; then
+            warning "LNI configuration had issues - continuing..."
+        fi
+    else
+        log "LNI disabled, skipping LNI configuration phase"
+    fi
+    
+    # Phase 6: Third-party Extensions (non-critical)
     if ! execute_ssm_phase "cockpit-thirdparty" "Third-party Extensions"; then
         warning "Third-party extensions installation had issues - continuing..."
     fi
     
-    # Phase 6: Final Configuration
+    # Phase 7: Final Configuration
     if ! execute_ssm_phase "cockpit-config" "Final Configuration"; then
         error "Final configuration failed"
         exit 1

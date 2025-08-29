@@ -27,6 +27,12 @@ SUBNET_ID=your-subnet-id
 SECURITY_GROUP_ID=your-security-group-id
 KEY_NAME=your-key-name
 REGION=us-east-1
+
+# Optional LNI Configuration
+ENABLE_LNI=false                    # Enable Local Network Interface creation
+LNI_COUNT=1                         # Number of LNIs to create (1-15)
+LNI_DHCP_ENABLED=true              # Use DHCP for IP assignment
+LNI_STATIC_IPS=""                  # Comma-separated static IPs (optional)
 ```
 
 ### 2. Add SSH Key
@@ -58,10 +64,11 @@ After deployment completes (~30-45 minutes), access Cockpit at:
 ## 📋 What Gets Installed
 
 - **Cockpit Web Console**: Complete system management interface
-- **Virtualization**: KVM/libvirt with VM management
+- **Virtualization**: KVM/libvirt with VM management via dedicated LNI networking
 - **Containers**: Podman with container management interface
 - **Storage Management**: Disk and filesystem tools with RAID5 support
 - **Enhanced Extensions**: File sharing, navigation, identity management (45Drives)
+- **Local Network Interfaces (Optional)**: Direct on-premises network access for VMs/containers
 
 ## 📂 Basic Commands
 
@@ -80,6 +87,31 @@ After deployment completes (~30-45 minutes), access Cockpit at:
 ./legacy/manage-instances.sh ssh
 ./legacy/manage-instances.sh terminate
 ```
+
+## 🌐 Local Network Interface (LNI) Support
+
+Configure optional Local Network Interfaces for direct on-premises VM/container networking:
+
+### LNI Configuration
+```bash
+# In your .env file
+ENABLE_LNI=true                     # Enable LNI creation during deployment
+LNI_COUNT=2                         # Create 2 LNIs for network segmentation
+LNI_DHCP_ENABLED=true              # Use DHCP (recommended)
+LNI_STATIC_IPS="192.168.1.100,192.168.1.101"  # Optional static IPs
+```
+
+### Benefits
+- **Direct On-Premises Access**: VMs bypass VPC networking for local connectivity
+- **Network Segmentation**: Each LNI provides isolated network path for workloads  
+- **Bandwidth Scaling**: Multiple 10Gbps interfaces for high-throughput workloads
+- **Dedicated IPs**: Each VM/container gets own on-premises IP address
+
+### VM Network Architecture
+- **ENI (eth0)**: Management network for SSH/Cockpit access
+- **LNI1 (eth1)**: Default VM network + backup SSH/HTTP access  
+- **LNI2+ (eth2+)**: Additional isolated networks for workload segmentation
+- **Libvirt Bridges**: Each LNI mapped to br-lni1, br-lni2, etc. for VM assignment
 
 ## 📁 Project Structure
 
