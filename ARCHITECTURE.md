@@ -9,8 +9,8 @@ We evaluated several hypervisor solutions before settling on Cockpit:
 
 - **Proxmox**: Excellent web interface and clustering, but complex Debian-based automation
 - **Straight KVM**: Minimal overhead and maximum control, but requires custom management tooling  
-- **Nutanix**: Enterprise features and support, but expensive licensing and vendor lock-in
-- **VMware**: Industry standard with mature tooling, but high licensing costs and complexity
+- **Nutanix**: Enterprise features and support, but expensive licensing 
+- **VMware**: Industry standard with mature tooling, but high licensing costs 
 
 **Why Cockpit won**: Rock-solid RHEL/Rocky foundation, growing open-source community, excellent web interface, and straightforward automation without licensing complexity.
 
@@ -23,7 +23,7 @@ Multiple deployment approaches were tested during development:
 - **CloudFormation**: AWS-native but verbose and harder to customize
 - **NixOS Pipeline**: Intriguing for immutable, repeatable builds but steep learning curve
 
-**Why SSM + User-Data won**: Easy to test and develop, minimal infrastructure management overhead, good balance of simplicity and maintainability. For production deployments, we still recommend the EC2 Image Builder approach for immutable AMIs.
+**Why SSM + User-Data won**: Easy to test and develop, minimal infrastructure management overhead, good balance of simplicity and maintainability. For production deployments, we still recommend the EC2 Image Builder approach.
 
 ### Key Trade-offs
 **Maintenance Reality**: No matter which approach you choose, some amount of ongoing maintenance is required. Package updates, security patches, and configuration drift are unavoidable.
