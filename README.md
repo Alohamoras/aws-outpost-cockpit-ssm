@@ -2,6 +2,20 @@
 
 Automated deployment of [Cockpit](https://cockpit-project.org/) web console on AWS Outpost instances using a modern **SSM multi-phase architecture**. This project provides idempotent, resumable deployment with excellent error handling and observability.
 
+## 💡 Why This Project Exists
+
+This project demonstrates the art of the possible with AWS Outpost servers. Why put a hypervisor on top of EC2 on an Outpost? **Disconnected operations flexibility.** 
+
+When you run virtualization directly on Outpost instances, you can manage your entire infrastructure while disconnected from the AWS region. This gives you the flexibility to build the cloud integrations that make sense for your workload while restricting dependencies as required for your specific use case.
+
+We chose Cockpit because it's built on a rock-solid OS foundation with a growing community and excellent web-based management interface. It provides enterprise-grade virtualization capabilities without the complexity and licensing costs of traditional hypervisor solutions.
+
+This approach is particularly valuable for:
+- **Edge locations** with intermittent connectivity
+- **Regulated environments** requiring air-gapped operations  
+- **Hybrid workloads** needing both cloud integration and local autonomy
+- **Development environments** where you need more control over the virtualization stack
+
 ## 🚀 Quick Start
 
 ### Prerequisites

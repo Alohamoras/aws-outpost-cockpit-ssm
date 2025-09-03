@@ -8,10 +8,9 @@
 - [ ] **Document storage prerequisites** - Specify minimum drive requirements and supported configurations (optional?)
 
 ### Core Infrastructure
-- [ ] **Add Local Network Interface (LNI) provisioning** - Automatically create and configure LNI during instance launch
+- [X] **Add Local Network Interface (LNI) provisioning** - Automatically create and configure LNI during instance launch
 - [ ] **Configure LNI as default VM interface** - Ensure hosted VMs use LNI instead of ENI for Outpost-local traffic
-- [ ] **Implement LNI SSH access** - Enable SSH connectivity via LNI for local management
-- [ ] **Prescriptive baseline configuration** - Define opinionated defaults for production-ready deployments
+- [ ] **Check LNI SSH access** - SSH connectivity via LNI for local management
 
 ## 📚 Documentation & Context
 
@@ -94,10 +93,11 @@
 ## Priority Matrix
 
 ### High Priority (Next Sprint)
-- Storage configuration validation and fixes
-- LNI provisioning and configuration  
+- Storage configuration validation and fixes - root volume still not working
 - Project background documentation
 - Production architecture guide
+- troubleshoot why application and VM service isn't installed by default
+- Check for hard coded variables like region az etc.
 
 ### Medium Priority (Next Quarter)
 - Migration workflows
@@ -107,10 +107,10 @@
 
 ### Low Priority (Future Releases)
 - Advanced networking features
-- GPU workload support
-- Marketplace distribution
 - Partner ecosystem development
 
 ---
 
 **Note**: This roadmap should be reviewed and prioritized based on user feedback, business requirements, and technical constraints. Items may be moved between priority levels based on changing needs.
+
+- troubleshoot why application and VM service isn't installed by default

@@ -2,6 +2,34 @@
 
 Technical deep-dive into the AWS Outpost Cockpit SSM deployment architecture.
 
+## 🤔 Alternative Approaches Considered
+
+### Hypervisor Alternatives
+We evaluated several hypervisor solutions before settling on Cockpit:
+
+- **Proxmox**: Excellent web interface and clustering, but complex Debian-based automation
+- **Straight KVM**: Minimal overhead and maximum control, but requires custom management tooling  
+- **Nutanix**: Enterprise features and support, but expensive licensing and vendor lock-in
+- **VMware**: Industry standard with mature tooling, but high licensing costs and complexity
+
+**Why Cockpit won**: Rock-solid RHEL/Rocky foundation, growing open-source community, excellent web interface, and straightforward automation without licensing complexity.
+
+### Deployment Method Alternatives
+Multiple deployment approaches were tested during development:
+
+- **Single User-Data Script**: Simple but time-consuming to test and troubleshoot
+- **EC2 Image Builder + CDK Pipeline**: Highly recommended for production - immutable, repeatable builds
+- **Packer + Terraform**: Great for infrastructure-as-code shops, but adds complexity
+- **CloudFormation**: AWS-native but verbose and harder to customize
+- **NixOS Pipeline**: Intriguing for immutable, repeatable builds but steep learning curve
+
+**Why SSM + User-Data won**: Easy to test and develop, minimal infrastructure management overhead, good balance of simplicity and maintainability. For production deployments, we still recommend the EC2 Image Builder approach for immutable AMIs.
+
+### Key Trade-offs
+**Maintenance Reality**: No matter which approach you choose, some amount of ongoing maintenance is required. Package updates, security patches, and configuration drift are unavoidable.
+
+**Learning Curve**: We optimized for developer productivity and ease of experimentation over enterprise deployment patterns. Production users should consider more robust deployment pipelines.
+
 ## 🏗️ SSM Multi-Phase Architecture
 
 The deployment uses AWS Systems Manager for reliable, observable deployment across 7 phases:
